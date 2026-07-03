@@ -22,11 +22,13 @@ LOCK_PATH = CSV_PATH + ".lock"
 COLUMNS = [
     "phone_number", "vehicle_no", "last_location", "timestamp", "gpstime",
     "main_powervoltage", "ismainpoerconnected", "gpsStatus",
-    "driver_name", "driver_phone", "current_location", "vehicle_state",
-    "current_state", "handler", "extracted_appointment_date",
-    "extracted_service_location", "root_cause", "physical_damage",
-    "contact_person", "contact_number", "service_date", "service_time",
-    "ticket_id", "engineer_id",
+    "driver_name", "driver_phone", "current_location", "destination_location",
+    "vehicle_state", "current_state", "handler", "extracted_appointment_date",
+    "extracted_service_location", "service_city_confirmed", "service_date_step",
+    "service_date", "service_time", "service_time_window",
+    "driver_contact_confirmed", "awaiting_alternate_contact",
+    "root_cause", "physical_damage", "contact_person",
+    "contact_number", "ticket_id", "engineer_id",
 ]
 
 

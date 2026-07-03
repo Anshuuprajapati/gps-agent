@@ -36,7 +36,7 @@ def create_ticket(session: dict) -> dict:
         "current_location": session.get("current_location", ""),
         "service_location": session.get("extracted_service_location", ""),
         "service_date": session.get("service_date", ""),
-        "service_time": session.get("service_time", ""),
+        "service_time": session.get("service_time_window", session.get("service_time", "")),
         "contact_person": session.get("contact_person", ""),
         "contact_number": session.get("contact_number", ""),
         "engineer_id": engineer.get("engineer_id", ""),

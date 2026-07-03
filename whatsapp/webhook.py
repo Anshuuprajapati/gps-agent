@@ -50,7 +50,19 @@ async def _receive_message(request: Request):
 
         message_data = change["messages"][0]
         sender_phone = message_data["from"]
-        text = message_data.get("text", {}).get("body", "").strip()
+        text = ""
+        if "text" in message_data:
+            text = message_data.get("text", {}).get("body", "").strip()
+        elif "button" in message_data:
+            text = message_data.get("button", {}).get("payload", "").strip() or message_data.get("button", {}).get("text", "").strip()
+        elif "interactive" in message_data:
+            interactive = message_data["interactive"]
+            text = (
+                interactive.get("button_reply", {}).get("id", "").strip()
+                or interactive.get("button_reply", {}).get("title", "").strip()
+                or interactive.get("list_reply", {}).get("id", "").strip()
+                or interactive.get("list_reply", {}).get("title", "").strip()
+            )
 
     except (KeyError, IndexError):
         return {"status": "ignored"}
@@ -65,7 +77,7 @@ async def _receive_message(request: Request):
     session_manager.update_session(updated_session)
 
     for out in outbound_messages:
-        send_message(out["phone"], out["text"])
+        send_message(out["phone"], out.get("text", ""), interactive=out.get("interactive"))
 
     return {"status": "ok"}
 
@@ -100,6 +112,6 @@ async def trigger_outage(vehicle_no: str):
     session_manager.update_session(updated_session)
 
     for out in outbound_messages:
-        send_message(out["phone"], out["text"])
+        send_message(out["phone"], out.get("text", ""), interactive=out.get("interactive"))
 
     return {"status": "sent", "vehicle_no": vehicle_no, "phone_number": owner_phone, "new_state": updated_session["current_state"]}

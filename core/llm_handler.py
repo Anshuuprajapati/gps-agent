@@ -16,6 +16,7 @@ Supports 3 free-tier-friendly providers, switchable via .env LLM_PROVIDER:
 import json
 import re
 import requests
+from datetime import date
 from config import settings
 
 SYSTEM_PROMPT = (
@@ -146,7 +147,9 @@ def classify_yes_no(current_state: str, user_message: str) -> str:
     result = extract_structured(
         current_state,
         "Classify the user's reply as YES, NO, or UNCLEAR (agreeing/confirming "
-        "vs declining/disagreeing). Return {\"value\": \"YES|NO|UNCLEAR\"}.",
+        "vs declining/disagreeing). Treat Hindi/Hinglish replies such as haan, "
+        "yes, theek hai, thik hai, nahin, no, nahi, repair, fix, replace as YES/NO "
+        "where appropriate. Return {\"value\": \"YES|NO|UNCLEAR\"}.",
         user_message,
     )
     return result.get("value", "UNCLEAR").upper()
@@ -180,8 +183,9 @@ def classify_self_or_driver(current_state: str, user_message: str) -> str:
     result = extract_structured(
         current_state,
         "Classify whether the user wants to handle this themselves (SELF) or "
-        "wants us to contact their driver (DRIVER). Return "
-        "{\"value\": \"SELF|DRIVER|UNCLEAR\"}.",
+        "wants us to contact their driver (DRIVER). Treat short replies like "
+        "haan/self/driver/repair as SELF or DRIVER if the meaning is clear. "
+        "Return {\"value\": \"SELF|DRIVER|UNCLEAR\"}.",
         user_message,
     )
     return result.get("value", "UNCLEAR").upper()
@@ -199,11 +203,27 @@ def classify_vehicle_status(current_state: str, user_message: str) -> str:
 
 
 def extract_date(current_state: str, user_message: str) -> str:
+    today = date.today().isoformat()
     result = extract_structured(
         current_state,
-        "Extract a date/time mentioned (any format) and normalize it to "
-        "YYYY-MM-DD if possible, else return the raw text. Return "
-        "{\"value\": \"<normalized date or raw text>\"}.",
+        "CURRENT_DATE: " + today + "\n"
+        "Extract a date mentioned (any format) and normalize it to "
+        "YYYY-MM-DD if possible, else return the raw text. If the user says "
+        "relative terms like 'parso' or 'day after tomorrow', compute the "
+        "actual date based on CURRENT_DATE. Return {\"value\": \"<normalized "
+        "date or raw text>\"}.",
+        user_message,
+    )
+    return result.get("value", "")
+
+
+def extract_time(current_state: str, user_message: str) -> str:
+    result = extract_structured(
+        current_state,
+        "Extract a time or preferred visit time mentioned in the message. "
+        "Normalize it to a 12-hour format like HH:MM AM/PM if possible, else "
+        "return the raw text. For Hindi/Hinglish phrases like '5 baje', "
+        "return '05:00 PM'. Return {\"value\": \"<normalized time or raw text>\"}.",
         user_message,
     )
     return result.get("value", "")

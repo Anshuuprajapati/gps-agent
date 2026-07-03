@@ -8,6 +8,10 @@ end-to-end by editing mock_sessions.csv yourself (e.g. flip gpsStatus to 1
 to simulate the device coming back online).
 """
 
+BATTERY = "BATTERY"
+BATTERY_ISSUE = BATTERY
+MAIN_POWER = "MAIN_POWER"
+MAIN_POWER_DISCONNECTED = MAIN_POWER
 BATTERY_VOLTAGE_THRESHOLD = 11.5  # below this = battery considered low
 
 
@@ -23,7 +27,7 @@ def _read_live_telemetry(session: dict) -> dict:
 def analyze_root_cause(session: dict) -> str:
     """
     Runs once, right after outage detection (PRE_ANALYSIS).
-    Returns one of: "BATTERY", "MAIN_POWER", "UNKNOWN"
+    Returns one of: "BATTERY_ISSUE", "MAIN_POWER", "UNKNOWN"
     """
     telemetry = _read_live_telemetry(session)
 
@@ -31,10 +35,10 @@ def analyze_root_cause(session: dict) -> str:
         return "UNKNOWN"  # shouldn't normally be called if GPS is fine
 
     if not telemetry["main_power_connected"]:
-        return "MAIN_POWER"
+        return MAIN_POWER_DISCONNECTED
 
     if telemetry["voltage"] < BATTERY_VOLTAGE_THRESHOLD:
-        return "BATTERY"
+        return BATTERY_ISSUE
 
     return "UNKNOWN"
 

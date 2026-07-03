@@ -9,7 +9,7 @@ import requests
 from config import settings
 
 
-def send_message(to_phone: str, text: str) -> dict:
+def send_message(to_phone: str, text: str = "", interactive: dict | None = None) -> dict:
     url = f"https://graph.facebook.com/{settings.META_API_VERSION}/{settings.META_PHONE_NUMBER_ID}/messages"
 
     headers = {
@@ -17,12 +17,20 @@ def send_message(to_phone: str, text: str) -> dict:
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_phone,
-        "type": "text",
-        "text": {"body": text},
-    }
+    if interactive is not None:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_phone,
+            "type": "interactive",
+            "interactive": interactive,
+        }
+    else:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_phone,
+            "type": "text",
+            "text": {"body": text},
+        }
 
     response = requests.post(url, headers=headers, json=payload, timeout=15)
 

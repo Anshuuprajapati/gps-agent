@@ -16,9 +16,11 @@ from core import session_manager
 
 CLEAR_ON_FULL_RESET = [
     "root_cause", "physical_damage", "contact_person", "contact_number",
-    "service_date", "service_time", "extracted_appointment_date",
-    "extracted_service_location", "ticket_id", "engineer_id",
-    "current_location", "vehicle_state",
+    "service_date", "service_time", "service_time_window",
+    "extracted_appointment_date", "extracted_service_location",
+    "service_city_confirmed", "service_date_step", "driver_contact_confirmed",
+    "awaiting_alternate_contact", "destination_location",
+    "ticket_id", "engineer_id", "current_location", "vehicle_state",
 ]
 
 
