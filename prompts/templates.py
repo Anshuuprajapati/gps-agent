@@ -66,15 +66,8 @@ T = {
     "ASK_PHYSICAL_DAMAGE": "Kya battery/wiring physically kharab hai ya replace/repair karni padegi? Reply YES ya NO.",
     "ASK_PHYSICAL_DAMAGE_MAIN_POWER": "Kya wiring ya fuse physically damage hai? Reply YES ya NO.",
 
-    "VEHICLE_STATUS_OPTIONS": (
-        "1) Workshop me\n2) Accident hua hai\n3) Vehicle chal rahi hai\n"
-        "4) GPS device damaged\n5) GPS device removed"
-    ),
-
     "ASK_VEHICLE_STATUS": (
-        "Samajh gaya. Ek aur cheez bataiye — vehicle abhi kis condition me hai?\n"
-        "1) Workshop me\n2) Accident hua hai\n3) Vehicle chal rahi hai\n"
-        "4) GPS device damaged\n5) GPS device removed"
+        "Samajh gaya. Ek aur cheez bataiye — vehicle abhi kis condition me hai?"
     ),
 
     "ASK_EXPECTED_DATE": "Vehicle kab tak wapas running condition me aa jayegi? (koi bhi date/format chalega)",

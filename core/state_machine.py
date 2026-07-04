@@ -121,7 +121,6 @@ def handle_start(session, message, sender_phone):
     # root cause unknown from telemetry alone -> ask vehicle status directly
     session["current_state"] = "ASK_VEHICLE_STATUS"
     text = render("OTHER_ALERT", vehicle_no=session["vehicle_no"], location=location, last_update=last_update)
-    text += "\n" + render("VEHICLE_STATUS_OPTIONS")
     return session, [_msg(sender_phone, text)]
 
 
