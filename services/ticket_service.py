@@ -9,7 +9,6 @@ import os
 import uuid
 import pandas as pd
 from config import settings
-from services.engineer_service import assign_engineer
 
 TICKET_COLUMNS = [
     "ticket_id", "vehicle_no", "issue_type", "current_location",
@@ -27,8 +26,6 @@ def _ensure_file():
 def create_ticket(session: dict) -> dict:
     _ensure_file()
 
-    engineer = assign_engineer(session.get("extracted_service_location", ""))
-
     ticket = {
         "ticket_id": "TKT-" + uuid.uuid4().hex[:8].upper(),
         "vehicle_no": session.get("vehicle_no", ""),
@@ -39,10 +36,10 @@ def create_ticket(session: dict) -> dict:
         "service_time": session.get("service_time_window", session.get("service_time", "")),
         "contact_person": session.get("contact_person", ""),
         "contact_number": session.get("contact_number", ""),
-        "engineer_id": engineer.get("engineer_id", ""),
-        "engineer_name": engineer.get("engineer_name", ""),
-        "engineer_phone": engineer.get("phone_number", ""),
-        "status": "ASSIGNED",
+        "engineer_id": "",
+        "engineer_name": "",
+        "engineer_phone": "",
+        "status": "PENDING",
     }
 
     df = pd.read_csv(settings.TICKETS_CSV, dtype=str).fillna("")
