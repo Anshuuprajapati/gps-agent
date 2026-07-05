@@ -12,11 +12,12 @@ Then point ngrok at it:
 
 from fastapi import FastAPI
 from whatsapp.webhook import router as whatsapp_router
+from voice.webhook import router as voice_router
 
 app = FastAPI(title="GPS AI Support Agent")
 
 app.include_router(whatsapp_router)
-
+app.include_router(voice_router)
 
 @app.get("/")
 def health_check():

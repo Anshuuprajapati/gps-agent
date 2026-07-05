@@ -40,6 +40,15 @@ class Settings:
     TICKETS_CSV = os.getenv("TICKETS_CSV", "data/tickets.csv")
     ENGINEERS_CSV = os.getenv("ENGINEERS_CSV", "data/engineers.csv")
 
+    # Twilio Voice (outbound calling agent)
+    TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+    TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+    TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
+    # Public base URL Twilio can reach (ngrok tunnel in dev). Some setups
+    # call this PUBLIC_URL (like outbound.js did), others TWILIO_WEBHOOK_URL
+    # — accept either so nothing breaks depending on which .env you copy.
+    PUBLIC_URL = (os.getenv("PUBLIC_URL", "") or os.getenv("TWILIO_WEBHOOK_URL", "")).rstrip("/")
+
     # Server
     PORT = int(os.getenv("PORT", "8000"))
 
