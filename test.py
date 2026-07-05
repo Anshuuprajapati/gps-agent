@@ -82,6 +82,7 @@ def no_real_llm(monkeypatch):
         "classify_yes_no", "classify_wait_done_reply", "classify_self_or_driver",
         "classify_vehicle_status", "extract_date", "extract_time",
         "extract_free_text", "extract_name_and_phone", "answer_from_knowledge_base",
+        "extract_booking_slots",
     ):
         monkeypatch.setattr(sm.llm, name, _boom, raising=True)
 
@@ -217,6 +218,7 @@ class TestVehicleStatusScenarios:
     ])
     def test_vehicle_status_routes_correctly(self, monkeypatch, llm_value, expected_state, expected_template_key):
         monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value=llm_value))
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value=""))  # no date given in this message
         session = base_session(current_state="ASK_VEHICLE_STATUS")
 
         session, outbound = sm.handle_ask_vehicle_status(session, "some free text reply", "919999900001")
@@ -279,7 +281,7 @@ class TestDriverHandover:
         session, outbound = sm.handle_ask_new_driver(session, "Ramesh 9876543210", "919999900001")
 
         assert session["driver_name"] == "Ramesh"
-        assert session["driver_phone"] == "9876543210"
+        assert session["driver_phone"] == "919876543210"  # normalized: 91 + bare 10-digit number
         assert session["handler"] == "DRIVER"
         assert session["current_state"] == "WAIT_DONE"
         assert len(outbound) == 2
@@ -550,7 +552,7 @@ class TestEntityExtraction:
         session, outbound = sm.handle_ask_new_driver(session, "Suresh 9123456789", "919999900001")
 
         assert session["driver_name"] == "Suresh"
-        assert session["driver_phone"] == "9123456789"
+        assert session["driver_phone"] == "919123456789"  # normalized: 91 + bare 10-digit number
 
     def test_extract_name_and_phone_missing_phone_reprompts(self, monkeypatch):
         monkeypatch.setattr(
@@ -573,7 +575,7 @@ class TestEntityExtraction:
         session = base_session(current_state="ASK_NEW_DRIVER")
         session, outbound = sm.handle_ask_new_driver(session, "Suresh, call on 9123456789 please", "919999900001")
 
-        assert session["driver_phone"] == "9123456789"
+        assert session["driver_phone"] == "919123456789"  # normalized: 91 + bare 10-digit number
         assert session["current_state"] == "WAIT_DONE"
 
     def test_extract_date_used_for_workshop_expected_date(self, monkeypatch):
@@ -745,6 +747,326 @@ class TestKnowledgeBase:
 
         answer = sm.llm.answer_from_knowledge_base("kuch bhi poochna hai")
         assert "available nahi hai" in answer
+
+
+# ============================ 20. BUG-FIX REGRESSION TESTS ================
+# One test per bug found in the audit — each of these would have FAILED
+# against the pre-fix code.
+
+class TestBugFixRegressions:
+    def test_physical_damage_calls_llm_exactly_once_for_text_replies(self, monkeypatch):
+        """Bug: classify_yes_no was called twice (once unconditionally,
+        once again inside the else-branch) — doubling cost/latency."""
+        mock = MagicMock(return_value="YES")
+        monkeypatch.setattr(sm.llm, "classify_yes_no", mock)
+        session = base_session(current_state="ASK_PHYSICAL_DAMAGE", root_cause=gps_service.BATTERY_ISSUE)
+
+        sm.handle_ask_physical_damage(session, "haan hai", "919999900001")
+
+        assert mock.call_count == 1
+
+    def test_physical_damage_button_payload_never_touches_llm(self, monkeypatch):
+        """Bug: a button click still triggered one wasted LLM call before
+        being overwritten by the payload check."""
+        mock = MagicMock(side_effect=AssertionError("button payload should never reach the LLM"))
+        monkeypatch.setattr(sm.llm, "classify_yes_no", mock)
+        session = base_session(current_state="ASK_PHYSICAL_DAMAGE", root_cause=gps_service.BATTERY_ISSUE)
+
+        session, outbound = sm.handle_ask_physical_damage(session, "PAYLOAD_YES", "919999900001")
+        assert session["current_state"] == "ASK_CURRENT_LOCATION"
+
+    def test_alternate_contact_keeps_valid_number_even_with_nahi_in_message(self, monkeypatch):
+        """Bug: missing parens meant ANY message containing 'nahi' got
+        treated as 'no contact provided', discarding a valid phone number
+        that was also present in the same message."""
+        monkeypatch.setattr(
+            sm.llm, "extract_name_and_phone",
+            MagicMock(return_value={"name": "Site guard", "phone": "9876543210"}),
+        )
+        session = base_session(current_state="ASK_ALTERNATE_CONTACT")
+
+        session, outbound = sm.handle_ask_alternate_contact(
+            session, "Nahi driver ka number hi sahi hai 9876543210", "919999900001"
+        )
+
+        assert session["contact_number"] == "9876543210"
+        assert session["contact_number"] != "NOT_PROVIDED"
+
+    def test_alternate_contact_still_handles_genuine_not_provided(self):
+        # make sure fixing the bug above didn't break the legitimate case
+        session = base_session(current_state="ASK_ALTERNATE_CONTACT")
+        session, outbound = sm.handle_ask_alternate_contact(session, "Nahi, koi number nahi hai", "919999900001")
+        assert session["contact_number"] == "NOT_PROVIDED"
+
+    def test_booking_correction_does_not_double_extract_once_already_updated(self, monkeypatch):
+        """Bug: missing parens meant the contact-person branch could fire
+        even when an earlier field in the same message had already set
+        updated=True, wasting a call and risking an incorrect overwrite."""
+        city_mock = MagicMock(return_value="Pune")
+        contact_mock = MagicMock(side_effect=AssertionError("should not run — service city already matched"))
+        monkeypatch.setattr(sm.llm, "extract_free_text", lambda state, msg, kind: (
+            city_mock(state, msg, kind) if kind == "preferred service city" else contact_mock(state, msg, kind)
+        ))
+        session = base_session(current_state="ASK_BOOKING_CORRECTION")
+
+        # this message contains "city" (matches the city branch first) AND
+        # "phone" (used to wrongly re-trigger the contact-person branch too)
+        session, outbound = sm.handle_ask_booking_correction(
+            session, "Service city Pune, phone sahi hai", "919999900001"
+        )
+
+        assert session["extracted_service_location"] == "Pune"
+        assert session["current_state"] == "CONFIRM_SUMMARY"
+
+    def test_service_date_yes_uses_the_date_actually_shown_to_customer(self, monkeypatch):
+        """Bug: the 'yes' branch re-derived aaj-vs-kal from datetime.now()
+        a second time — if the hour ticked past the 19:00 cutoff between
+        question and reply, 'yes' could get booked for the wrong day."""
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value=""))
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
+        session = base_session(current_state="ASK_SERVICE_DATE", pending_quick_date="2026-08-15")
+
+        session, outbound = sm.handle_ask_service_date(session, "haan", "919999900001")
+
+        assert session["service_date"] == "2026-08-15"
+
+    def test_driver_phone_normalized_to_match_metas_incoming_format(self, monkeypatch):
+        """Bug: a driver's number saved as a bare 10-digit string would
+        never match Meta's full-country-code 'from' field on their next
+        incoming message — find_session() would report 'no active case'."""
+        monkeypatch.setattr(
+            sm.llm, "extract_name_and_phone",
+            MagicMock(return_value={"name": "Ramesh", "phone": "9876543210"}),
+        )
+        session = base_session(current_state="ASK_NEW_DRIVER")
+        session, outbound = sm.handle_ask_new_driver(session, "Ramesh 9876543210", "919999900001")
+
+        assert session["driver_phone"] == "919876543210"
+        # this is exactly the format Meta would send as `from` when the
+        # driver later messages in — find_session()'s exact-match lookup
+        # now actually succeeds
+        assert session["driver_phone"].startswith("91") and len(session["driver_phone"]) == 12
+
+    def test_engineer_assignment_exact_zone_match_beats_substring_collision(self, tmp_path, monkeypatch):
+        """Bug: pure substring matching meant a zone like 'Punepur' could
+        shadow the correct 'Pune' zone depending on CSV row order, since
+        'pune' in 'punepur' is True."""
+        engineers_csv = tmp_path / "engineers_ambiguous.csv"
+        with open(engineers_csv, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["engineer_id", "engineer_name", "phone_number", "zone"])
+            w.writerow(["ENG_WRONG", "Wrong Engineer", "919000000099", "Punepur"])
+            w.writerow(["ENG_RIGHT", "Right Engineer", "919000000001", "Pune"])
+        monkeypatch.setattr(settings, "ENGINEERS_CSV", str(engineers_csv))
+
+        engineer = engineer_service.assign_engineer("Pune")
+        assert engineer["engineer_id"] == "ENG_RIGHT"
+
+    def test_concurrent_ticket_creation_does_not_lose_tickets(self, tmp_csv_backend):
+        """Bug: ticket_service.create_ticket() had zero file locking —
+        concurrent bookings could race and one ticket would silently
+        vanish from tickets.csv."""
+        import threading
+
+        sessions = [base_session(vehicle_no=f"MH12AB{i:04d}", extracted_service_location="Pune") for i in range(10)]
+        results = []
+        results_lock = threading.Lock()
+
+        def _create(s):
+            ticket = ticket_service.create_ticket(s)
+            with results_lock:
+                results.append(ticket)
+
+        threads = [threading.Thread(target=_create, args=(s,)) for s in sessions]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        tickets_csv, _ = tmp_csv_backend
+        with open(tickets_csv) as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(results) == 10
+        assert len(rows) == 10  # none lost to the race
+        assert len({r["ticket_id"] for r in rows}) == 10  # all unique
+
+    def test_session_transaction_finds_processes_and_writes_atomically(self, tmp_sessions_backend):
+        session_manager.create_session(phone_number="919999977777", vehicle_no="MH12QQ0001", current_state="WAIT_DONE")
+
+        with session_manager.session_transaction("919999977777") as session:
+            assert session is not None
+            assert session["current_state"] == "WAIT_DONE"
+            session["current_state"] = "COMPLETED"
+
+        reloaded = session_manager.find_session("919999977777")
+        assert reloaded["current_state"] == "COMPLETED"
+
+    def test_session_transaction_no_session_does_not_write_anything(self, tmp_sessions_backend):
+        with session_manager.session_transaction("919999900000_does_not_exist") as session:
+            assert session is None
+        # should not have created a stray row for a phone number with no session
+        assert session_manager.find_session("919999900000_does_not_exist") is None
+
+
+# =========================== 21. BULK "GIVE EVERYTHING AT ONCE" EXTRACTION =
+
+class TestBulkBookingExtraction:
+    def test_multi_field_message_skips_straight_to_confirmation(self, monkeypatch):
+        """
+        Customer gives location, destination, date, time, contact person
+        AND number all in one message from the very first booking
+        question — should land straight on CONFIRM_SUMMARY, skipping
+        every intermediate question.
+        """
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "Nagpur Bypass",
+            "destination_location": "Pune",
+            "service_date": "",
+            "service_time_window": "",
+            "contact_person": "",
+            "contact_number": "",
+        }))
+        session = base_session(current_state="ASK_CURRENT_LOCATION")
+
+        session, outbound = sm.process_message(
+            session,
+            "Meri gaadi Nagpur Bypass ke paas hai aur hume Pune jaana hai kal subah",
+            "919999900001",
+        )
+
+        assert session["current_location"] == "Nagpur Bypass"
+        assert session["destination_location"] == "Pune"
+        # city confirmation is never skipped, even when both fields are known
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+
+    def test_giving_everything_at_once_from_the_start(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "Nagpur Bypass",
+            "destination_location": "Pune",
+            "service_date": "2026-07-10",
+            "service_time_window": "05:00 PM",
+            "contact_person": "Rahul",
+            "contact_number": "9876543210",
+        }))
+        session = base_session(current_state="ASK_CURRENT_LOCATION")
+
+        session, outbound = sm.process_message(
+            session,
+            "Nagpur bypass ke paas hu, Pune jaana hai, 10 July shaam 5 baje, contact Rahul 9876543210",
+            "919999900001",
+        )
+
+        # still stops at the mandatory city-confirmation safety check,
+        # everything else got skipped
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+        assert session["service_date"] == "2026-07-10"
+        assert session["service_time_window"] == "05:00 PM"
+        assert session["contact_person"] == "Rahul"
+        assert session["contact_number"] == "9876543210"
+
+    def test_short_single_answer_never_triggers_bulk_extraction(self, monkeypatch):
+        """
+        Ordinary one-word replies must NOT pay for the extra LLM call —
+        the length pre-filter should skip bulk extraction entirely.
+        """
+        bulk_mock = MagicMock(side_effect=AssertionError("should not attempt bulk extraction on a short reply"))
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", bulk_mock)
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Nagpur"))
+
+        session = base_session(current_state="ASK_CURRENT_LOCATION")
+        session, outbound = sm.process_message(session, "Nagpur", "919999900001")
+
+        assert session["current_state"] == "ASK_DESTINATION_LOCATION"
+
+    def test_single_extra_field_is_not_enough_to_fast_forward(self, monkeypatch):
+        """
+        Only ONE field found (besides normal single-question flow) should
+        NOT trigger the jump — falls through to the state's own handler,
+        which still extracts that one field normally.
+        """
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "Nagpur Bypass, right next to the old fort area",
+            "destination_location": "",
+            "service_date": "",
+            "service_time_window": "",
+            "contact_person": "",
+            "contact_number": "",
+        }))
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Nagpur Bypass, right next to the old fort area"))
+        session = base_session(current_state="ASK_CURRENT_LOCATION")
+
+        session, outbound = sm.process_message(
+            session, "Nagpur Bypass ke paas hai, wahi purane fort ke area mein", "919999900001"
+        )
+
+        # normal single-field advancement, not a bulk jump
+        assert session["current_state"] == "ASK_DESTINATION_LOCATION"
+
+    def test_bulk_extraction_never_overwrites_already_captured_fields(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "Should Not Overwrite",
+            "destination_location": "Pune",
+            "service_date": "2026-07-10",
+            "service_time_window": "",
+            "contact_person": "",
+            "contact_number": "",
+        }))
+        session = base_session(current_state="ASK_DESTINATION_LOCATION", current_location="Original Nagpur Location")
+
+        session, outbound = sm.process_message(
+            session, "Pune jaana hai 10 July ko, jaldi book kar dijiye please", "919999900001"
+        )
+
+        assert session["current_location"] == "Original Nagpur Location"  # untouched
+        assert session["destination_location"] == "Pune"
+
+    def test_workshop_status_with_date_in_same_message_skips_ask_expected_date(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="WORKSHOP"))
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value="2026-07-20"))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.handle_ask_vehicle_status(
+            session, "Gaadi workshop mein hai, 20 July tak ready ho jayegi", "919999900001"
+        )
+
+        assert session["current_state"] == "COMPLETED"
+        assert session["extracted_appointment_date"] == "2026-07-20"
+
+    def test_workshop_status_without_date_still_asks_separately(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="WORKSHOP"))
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value=""))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.handle_ask_vehicle_status(session, "Gaadi workshop mein hai", "919999900001")
+
+        assert session["current_state"] == "ASK_EXPECTED_DATE"
+
+    def test_bulk_extraction_works_identically_through_voice_path(self, monkeypatch):
+        """
+        Voice and WhatsApp share process_message() — a long spoken
+        transcript with several answers at once should fast-forward
+        exactly the same way as a WhatsApp message would.
+        """
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "Nagpur Bypass",
+            "destination_location": "Pune",
+            "service_date": "",
+            "service_time_window": "",
+            "contact_person": "",
+            "contact_number": "",
+        }))
+        session = base_session(current_state="ASK_CURRENT_LOCATION")
+
+        # simulates a Twilio SpeechResult transcript, not a WhatsApp text
+        session, outbound = sm.process_message(
+            session,
+            "meri gaadi nagpur bypass ke paas hai aur hamein pune jana hai",
+            "919999900001",
+        )
+
+        assert session["destination_location"] == "Pune"
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
 
 
 if __name__ == "__main__":

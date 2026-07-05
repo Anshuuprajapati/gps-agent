@@ -14,8 +14,16 @@ def assign_engineer(service_location: str) -> dict:
     df = pd.read_csv(settings.ENGINEERS_CSV, dtype=str).fillna("")
     service_location = (service_location or "").strip().lower()
 
+    # exact zone match first — most reliable, and avoids a zone like
+    # "Pune" accidentally matching an unrelated location that merely
+    # contains "pune" as a substring
     for _, row in df.iterrows():
-        if row["zone"].strip().lower() in service_location or service_location in row["zone"].strip().lower():
+        if row["zone"].strip().lower() == service_location:
+            return row.to_dict()
+
+    for _, row in df.iterrows():
+        zone = row["zone"].strip().lower()
+        if zone and (zone in service_location or service_location in zone):
             return row.to_dict()
 
     default_row = df[df["zone"].str.lower() == "default"]

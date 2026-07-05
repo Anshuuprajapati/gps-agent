@@ -10,6 +10,9 @@ All reads/writes go through a file lock so two webhook calls arriving at
 almost the same time don't corrupt the CSV.
 """
 
+import os
+from contextlib import contextmanager
+
 import pandas as pd
 from filelock import FileLock
 from config import settings
@@ -29,6 +32,7 @@ COLUMNS = [
     "driver_contact_confirmed", "awaiting_alternate_contact",
     "root_cause", "physical_damage", "contact_person",
     "contact_number", "ticket_id", "engineer_id", "last_prompt_text",
+    "pending_quick_date",
 ]
 
 
@@ -119,3 +123,49 @@ def create_session(phone_number: str, vehicle_no: str, **extra) -> dict:
     session.update(extra)
     update_session(session)
     return session
+
+
+def _lock_path_for(phone: str) -> str:
+    safe = "".join(ch for ch in str(phone) if ch.isalnum()) or "unknown"
+    return os.path.join(os.path.dirname(CSV_PATH) or ".", f".session_{safe}.lock")
+
+
+@contextmanager
+def session_transaction(incoming_phone: str):
+    """
+    Makes "find this session, let the caller process a turn, write it
+    back" one atomic, cross-process-safe operation for THIS phone number.
+
+    Why this exists: find_session() and a separate later update_session()
+    call left a window open between the read and the write (state_machine
+    processing, including LLM calls, happens in between). A WhatsApp
+    webhook retry, a double-tapped button, or two rapid messages from the
+    same person could both read the same starting state in that window —
+    whichever call wrote back last would silently erase the other's
+    update. Holding a lock for the whole turn closes that window.
+
+    Scoped per-phone-number (its own lock file) rather than one shared
+    lock, so different customers' conversations still process fully in
+    parallel — only messages for the SAME session are serialized.
+
+    Usage:
+        with session_manager.session_transaction(sender_phone) as session:
+            if session is None:
+                ...  # no active case
+                return
+            updated_session, outbound = state_machine.process_message(...)
+            # no need to call update_session() yourself — it happens
+            # automatically here, using whatever `session` looks like
+            # when the "with" block exits (handlers mutate it in place)
+
+    Known limitation: if the owner and driver on the SAME case happen to
+    message in at the exact same instant (one lock per phone number, and
+    owner/driver are different numbers), that specific cross-number race
+    isn't covered. Everything else is.
+    """
+    incoming_phone = str(incoming_phone).strip()
+    with FileLock(_lock_path_for(incoming_phone)):
+        session = find_session(incoming_phone)
+        yield session
+        if session is not None:
+            update_session(session)

@@ -1,6 +1,7 @@
-phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text
-918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,,WORKSHOP,COMPLETED,OWNER,2026-07-06,,UNKNOWN,,,,,,,,,,,,,,"✅ Thik hai. Humne 2026-07-06 note kar liya hai.
+phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,pending_quick_date
+918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,दिल्ली,RUNNING,COMPLETED,OWNER,,पुणे,UNKNOWN,,Sarvesh Swami,8290323758,2026-07-06,,TKT-DF28AC00,ENG005,पुणे,TRUE,0,05:00 PM,TRUE,,"✅ Ticket created.
 
-Jab vehicle running mein aa jaye, hume message kar dijiye. Filhal case close kar rahe hain.
+🆔 Ticket ID: TKT-DF28AC00
 
-Dhanyavaad!"
+Aapki request record ho gayi hai. Hamari team aapko zarurat par contact karegi.
+Dhanyavaad!",2026-07-06

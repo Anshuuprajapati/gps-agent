@@ -14,15 +14,55 @@ Your webhook URL (already set in Meta App dashboard):
 
 Note: routes are registered for BOTH "/webhook" and "/webhook/" so Meta
 posting with or without a trailing slash never triggers a 307 redirect.
+
+Reliability notes (see bug audit):
+  - Meta WILL redeliver the same webhook payload on retries/timeouts —
+    this is normal, not rare. _already_processed() deduplicates by the
+    WhatsApp message ID so a retried delivery doesn't get processed twice
+    (double ticket, driver messaged twice, etc). This is an in-memory,
+    per-process cache — fine for the retry-window timescale Meta actually
+    uses, but won't cover a multi-worker deployment sharing no state; a
+    persisted/shared dedup store would be the next step if you scale to
+    multiple workers.
+  - session_manager.session_transaction() makes "find this session, run
+    the state machine, write it back" one atomic per-phone operation,
+    closing the race window a plain find_session()+update_session() pair
+    left open between concurrent messages for the same conversation.
+  - The actual processing work (LLM calls, session I/O, sending replies)
+    is synchronous/blocking code. Run_in_threadpool offloads it so one
+    slow request doesn't stall the event loop for every OTHER customer's
+    conversation at the same time.
 """
 
+from collections import OrderedDict
+
 from fastapi import APIRouter, Request, Response, HTTPException
+from starlette.concurrency import run_in_threadpool
+
 from config import settings
 from core import session_manager
 from core import state_machine
 from whatsapp.sender import send_message
 
 router = APIRouter()
+
+# ------------------------------------------------- webhook-retry dedup --
+
+_MAX_SEEN_MESSAGE_IDS = 2000
+_seen_message_ids: "OrderedDict[str, None]" = OrderedDict()
+
+
+def _already_processed(message_id: str) -> bool:
+    """LRU-ish in-memory dedup cache keyed by WhatsApp's message id."""
+    if not message_id:
+        return False
+    if message_id in _seen_message_ids:
+        _seen_message_ids.move_to_end(message_id)
+        return True
+    _seen_message_ids[message_id] = None
+    if len(_seen_message_ids) > _MAX_SEEN_MESSAGE_IDS:
+        _seen_message_ids.popitem(last=False)
+    return False
 
 
 async def _verify_webhook(request: Request):
@@ -37,9 +77,12 @@ async def _verify_webhook(request: Request):
     return Response(content="Verification failed", status_code=403)
 
 
-async def _receive_message(request: Request):
-    payload = await request.json()
-
+def _process_incoming_message(payload: dict) -> dict:
+    """
+    All the actual (blocking) work for one webhook delivery. Runs inside
+    a thread-pool worker (see _receive_message below) so it doesn't block
+    the event loop for other requests while it's running.
+    """
     try:
         entry = payload["entry"][0]
         change = entry["changes"][0]["value"]
@@ -49,6 +92,7 @@ async def _receive_message(request: Request):
             return {"status": "ignored"}
 
         message_data = change["messages"][0]
+        message_id = message_data.get("id", "")
         sender_phone = message_data["from"]
         text = ""
         if "text" in message_data:
@@ -67,19 +111,29 @@ async def _receive_message(request: Request):
     except (KeyError, IndexError):
         return {"status": "ignored"}
 
-    session = session_manager.find_session(sender_phone)
+    if _already_processed(message_id):
+        return {"status": "duplicate_ignored"}
 
-    if session is None:
-        send_message(sender_phone, "Aapka koi active case nahi mila. Kripya support se contact karein.")
-        return {"status": "no_session"}
+    outbound_messages = []
+    with session_manager.session_transaction(sender_phone) as session:
+        if session is None:
+            send_message(sender_phone, "Aapka koi active case nahi mila. Kripya support se contact karein.")
+            return {"status": "no_session"}
 
-    updated_session, outbound_messages = state_machine.process_message(session, text, sender_phone)
-    session_manager.update_session(updated_session)
+        updated_session, outbound_messages = state_machine.process_message(session, text, sender_phone)
+        if updated_session is not session:
+            session.clear()
+            session.update(updated_session)
 
     for out in outbound_messages:
         send_message(out["phone"], out.get("text", ""), interactive=out.get("interactive"))
 
     return {"status": "ok"}
+
+
+async def _receive_message(request: Request):
+    payload = await request.json()
+    return await run_in_threadpool(_process_incoming_message, payload)
 
 
 # registered twice (with/without trailing slash) so Meta never gets a 307

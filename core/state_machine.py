@@ -23,6 +23,22 @@ from prompts.templates import render
 PHONE_RE = re.compile(r"(\d{10,13})")
 
 
+def _normalize_indian_phone(raw_digits: str) -> str:
+    """
+    Meta reports an incoming WhatsApp sender's number WITH the country
+    code and no '+' (e.g. "919876543210"). A driver's number typed into
+    chat by the owner is usually just the bare 10-digit mobile number.
+    Without normalizing at the point of capture, the driver's own future
+    messages would never match this session — find_session() does an
+    exact string match against driver_phone, and "9876543210" !=
+    "919876543210" — the driver would hit "no active case found."
+    """
+    digits = re.sub(r"\D", "", raw_digits or "")
+    if len(digits) == 10:
+        return "91" + digits
+    return digits
+
+
 def _msg(phone, text="", interactive: dict | None = None):
     message = {"phone": phone}
     if interactive is not None:
@@ -61,10 +77,25 @@ def _is_driver_request(message: str) -> bool:
 
 
 def get_service_date_prompt() -> str:
+    text, _ = get_service_date_prompt_and_date()
+    return text
+
+
+def get_service_date_prompt_and_date() -> tuple[str, str]:
+    """
+    Returns both the question text AND the exact date it refers to.
+    Needed because handle_ask_service_date's "yes" branch used to
+    re-derive "aaj vs kal" from datetime.now() a second time, independent
+    of what was actually shown to the customer — if the hour ticks past
+    the 19:00 cutoff between question and reply, "yes" would silently
+    get interpreted as confirming a different day than the one asked
+    about. Resolving the date once, here, and reusing it removes that
+    inconsistency.
+    """
     now = datetime.now()
     if now.hour < 19:
-        return "Kya aaj service book kar dein?"
-    return "Kya kal service book kar dein?"
+        return "Kya aaj service book kar dein?", now.date().isoformat()
+    return "Kya kal service book kar dein?", (now.date() + timedelta(days=1)).isoformat()
 
 
 def get_service_date_options_prompt() -> str:
@@ -102,7 +133,6 @@ def handle_start(session, message, sender_phone):
     # root cause unknown from telemetry alone -> ask vehicle status directly
     session["current_state"] = "ASK_VEHICLE_STATUS"
     text = render("OTHER_ALERT", vehicle_no=session["vehicle_no"], location=location, last_update=last_update)
-    text += "\n" + render("ASK_VEHICLE_STATUS")
     text += "\n" + render("VEHICLE_STATUS_OPTIONS")
     return session, [_msg(sender_phone, text)]
 
@@ -183,7 +213,8 @@ def handle_ask_new_driver(session, message, sender_phone):
     phone_match = PHONE_RE.search(extracted.get("phone", "") or message)
 
     if extracted.get("name") and phone_match:
-        session = driver_service.update_driver_details(session, extracted["name"], phone_match.group(1))
+        driver_phone = _normalize_indian_phone(phone_match.group(1))
+        session = driver_service.update_driver_details(session, extracted["name"], driver_phone)
         session = driver_service.transfer_to_driver(session)
         session["current_state"] = "WAIT_DONE"
         owner_msg = _msg(session["phone_number"], render("TRANSFER_DONE_OWNER"))
@@ -240,8 +271,6 @@ def handle_wait_done(session, message, sender_phone):
 # --------------------------------------------------------- ASK_PHYSICAL_DAMAGE
 
 def handle_ask_physical_damage(session, message, sender_phone):
-    answer = llm.classify_yes_no(session["current_state"], message)
-
     payload = _normalize_payload(message)
     if payload == "PAYLOAD_YES":
         answer = "YES"
@@ -270,13 +299,19 @@ def handle_ask_vehicle_status(session, message, sender_phone):
     status = llm.classify_vehicle_status(session["current_state"], message)
     session["vehicle_state"] = status
 
-    if status == "WORKSHOP":
-        session["current_state"] = "ASK_EXPECTED_DATE"
-        return session, [_msg(sender_phone, render("ASK_EXPECTED_DATE_WORKSHOP"))]
+    if status in ("WORKSHOP", "ACCIDENT"):
+        # If the customer already said e.g. "Workshop me hai, 15 July tak
+        # ready hogi" in the same message, don't ask the date again —
+        # save it and close right here.
+        date_value = llm.extract_date(session["current_state"], message)
+        if date_value:
+            session["extracted_appointment_date"] = date_value
+            session["current_state"] = "COMPLETED"
+            return session, [_msg(sender_phone, render("SAVE_DATE_CLOSE", date=date_value))]
 
-    if status == "ACCIDENT":
         session["current_state"] = "ASK_EXPECTED_DATE"
-        return session, [_msg(sender_phone, render("ASK_EXPECTED_DATE_ACCIDENT"))]
+        template = "ASK_EXPECTED_DATE_WORKSHOP" if status == "WORKSHOP" else "ASK_EXPECTED_DATE_ACCIDENT"
+        return session, [_msg(sender_phone, render(template))]
 
     if status in ("RUNNING", "GPS_DAMAGED", "GPS_REMOVED"):
         session["current_state"] = "ASK_CURRENT_LOCATION"
@@ -322,7 +357,9 @@ def handle_ask_service_city_confirmation(session, message, sender_phone):
         session["extracted_service_location"] = session.get("destination_location", "Delhi") or "Delhi"
         session["current_state"] = "ASK_SERVICE_DATE"
         session["service_date_step"] = 0
-        return session, [_msg(sender_phone, get_service_date_prompt())]
+        prompt_text, implied_date = get_service_date_prompt_and_date()
+        session["pending_quick_date"] = implied_date
+        return session, [_msg(sender_phone, prompt_text)]
 
     if answer == "NO":
         session["service_city_confirmed"] = "FALSE"
@@ -338,7 +375,9 @@ def handle_ask_service_city_preference(session, message, sender_phone):
     session["service_city_confirmed"] = "FALSE"
     session["current_state"] = "ASK_SERVICE_DATE"
     session["service_date_step"] = 0
-    return session, [_msg(sender_phone, get_service_date_prompt())]
+    prompt_text, implied_date = get_service_date_prompt_and_date()
+    session["pending_quick_date"] = implied_date
+    return session, [_msg(sender_phone, prompt_text)]
 
 
 def handle_ask_service_date(session, message, sender_phone):
@@ -350,11 +389,7 @@ def handle_ask_service_date(session, message, sender_phone):
 
     answer = llm.classify_yes_no(session["current_state"], message)
     if answer == "YES":
-        prompt = get_service_date_prompt()
-        if "aaj" in prompt:
-            session["service_date"] = datetime.now().date().isoformat()
-        else:
-            session["service_date"] = (datetime.now().date() + timedelta(days=1)).isoformat()
+        session["service_date"] = session.get("pending_quick_date") or datetime.now().date().isoformat()
         session["current_state"] = "ASK_SERVICE_TIME_WINDOW"
         return session, [_msg(sender_phone, render("ASK_SERVICE_TIME_WINDOW"))]
 
@@ -448,7 +483,18 @@ def handle_driver_contact_confirmation(session, message, sender_phone):
 
 def handle_ask_alternate_contact(session, message, sender_phone):
     raw = message.strip().lower()
-    if "nahi" in raw or "no" in raw and "number" in raw or "not provided" in raw or "not provided" in message.lower():
+
+    # Fixed two bugs here:
+    #   1. missing parens meant "phone" alone (via "no...number") wasn't
+    #      properly grouped with "nahi"/"not provided" before being AND'd.
+    #   2. a message containing "nahi" ANYWHERE used to be treated as "no
+    #      contact provided" even if it also contained a valid phone
+    #      number (e.g. "Nahi, driver ka number hi sahi hai, 9876543210"
+    #      would previously throw the number away).
+    says_not_provided = "nahi" in raw or ("no" in raw and "number" in raw) or "not provided" in raw
+    has_phone_number = bool(PHONE_RE.search(message))
+
+    if says_not_provided and not has_phone_number:
         session["contact_person"] = "NOT_PROVIDED"
         session["contact_number"] = "NOT_PROVIDED"
         session["current_state"] = "CONFIRM_SUMMARY"
@@ -537,7 +583,7 @@ def handle_ask_booking_correction(session, message, sender_phone):
             session["extracted_service_location"] = value
             updated = True
 
-    if "contact person" in raw or "site" in raw or "phone" in raw or "number" in raw and not updated:
+    if ("contact person" in raw or "site" in raw or "phone" in raw or "number" in raw) and not updated:
         value = llm.extract_free_text(session["current_state"], message, "contact person name")
         if value:
             session["contact_person"] = value
@@ -670,6 +716,161 @@ def _handle_general_question(session, message, sender_phone):
     return session, [_msg(sender_phone, reply)]
 
 
+# ------------------------------------------ bulk booking-slot extraction --
+# "Give everything in one line" — if a customer volunteers several
+# booking answers at once instead of one field at a time, extract all of
+# them and skip straight to whatever's still missing, instead of asking
+# questions that were already answered. Saves the customer real time on
+# both WhatsApp and the voice agent (both go through process_message()).
+
+# Only these states are open free-text answers where bulk-extraction makes
+# sense. Yes/no confirmations and numbered-menu states are deliberately
+# excluded — extracting "booking slots" out of "haan" or "2" doesn't mean
+# anything, and the safety confirmation step is never skipped (see
+# _next_missing_booking_state).
+_BOOKING_FLOW_STATES = {
+    "ASK_CURRENT_LOCATION", "ASK_DESTINATION_LOCATION",
+    "ASK_SERVICE_DATE", "ASK_SERVICE_TIME_WINDOW",
+    "ASK_CONTACT_PERSON", "ASK_CONTACT_NUMBER",
+}
+
+
+def _looks_information_dense(message: str) -> bool:
+    """
+    Cheap pre-filter so we don't spend an extra LLM call on every single
+    ordinary one-word answer ("Nagpur", "Kal", "9876543210") — only
+    messages that are actually long enough to plausibly contain several
+    answers at once trigger the bulk-extraction attempt.
+    """
+    return len(message.split()) >= 6
+
+
+def _apply_booking_slots(session: dict, message: str, slots: dict) -> bool:
+    """
+    Fills in whatever booking fields were found (without ever overwriting
+    something already captured earlier). Returns True only if at least
+    TWO fields got filled — one field is just an ordinary answer to
+    whatever was already being asked, and should go through that state's
+    normal handler as usual; two or more is the actual "gave everything
+    at once" case worth fast-forwarding for.
+    """
+    filled = []
+
+    if slots.get("current_location") and not session.get("current_location"):
+        session["current_location"] = slots["current_location"]
+        filled.append("current_location")
+
+    if slots.get("destination_location") and not session.get("destination_location"):
+        session["destination_location"] = slots["destination_location"]
+        filled.append("destination_location")
+
+    if slots.get("service_date") and not session.get("service_date"):
+        session["service_date"] = slots["service_date"]
+        filled.append("service_date")
+
+    if slots.get("service_time_window") and not session.get("service_time_window"):
+        session["service_time_window"] = slots["service_time_window"]
+        filled.append("service_time_window")
+
+    if slots.get("contact_person") and not session.get("contact_person"):
+        session["contact_person"] = slots["contact_person"]
+        filled.append("contact_person")
+
+    phone_match = PHONE_RE.search(slots.get("contact_number") or "") or PHONE_RE.search(message)
+    if phone_match and not session.get("contact_number"):
+        session["contact_number"] = phone_match.group(1)
+        filled.append("contact_number")
+
+    return len(filled) >= 2
+
+
+def _next_missing_booking_state(session: dict) -> str:
+    """
+    Given whatever booking fields are already filled in, returns the
+    state for the next thing still needed — this is what lets a customer
+    skip straight past several already-answered questions at once.
+
+    The city-confirmation yes/no is deliberately NEVER skipped even if a
+    destination was already given — booking a service call to the wrong
+    city is costly enough that it always gets an explicit confirmation.
+    """
+    if not session.get("current_location"):
+        return "ASK_CURRENT_LOCATION"
+    if not session.get("destination_location"):
+        return "ASK_DESTINATION_LOCATION"
+    if not session.get("service_city_confirmed"):
+        return "ASK_SERVICE_CITY_CONFIRMATION"
+    if not session.get("service_date"):
+        return "ASK_SERVICE_DATE"
+    if not session.get("service_time_window"):
+        return "ASK_SERVICE_TIME_WINDOW"
+
+    has_driver = bool(session.get("driver_name") or session.get("driver_phone"))
+    gave_explicit_contact = bool(session.get("contact_person")) and bool(session.get("contact_number"))
+    if has_driver and not session.get("driver_contact_confirmed") and not gave_explicit_contact:
+        return "ASK_DRIVER_CONTACT_CONFIRMATION"
+
+    if not session.get("contact_person"):
+        return "ASK_CONTACT_PERSON"
+    if not session.get("contact_number"):
+        return "ASK_CONTACT_NUMBER"
+    return "CONFIRM_SUMMARY"
+
+
+def _prompt_for_booking_state(session: dict, state: str) -> str:
+    """
+    Builds the exact prompt for `state`, reusing the same
+    template/kwargs each per-field handler already uses for that same
+    state — kept in one place so the bulk-extraction fast path and the
+    normal step-by-step handlers can never drift apart.
+    """
+    if state == "ASK_CURRENT_LOCATION":
+        return render("ASK_CURRENT_LOCATION")
+    if state == "ASK_DESTINATION_LOCATION":
+        return render("ASK_DESTINATION_LOCATION")
+    if state == "ASK_SERVICE_CITY_CONFIRMATION":
+        suggested_city = session.get("destination_location") or "Delhi"
+        return render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=suggested_city)
+    if state == "ASK_SERVICE_DATE":
+        prompt_text, implied_date = get_service_date_prompt_and_date()
+        session["pending_quick_date"] = implied_date
+        return prompt_text
+    if state == "ASK_SERVICE_TIME_WINDOW":
+        return render("ASK_SERVICE_TIME_WINDOW")
+    if state == "ASK_DRIVER_CONTACT_CONFIRMATION":
+        return render(
+            "ASK_DRIVER_CONTACT_CONFIRMATION",
+            driver_name=session.get("driver_name", ""),
+            driver_phone=session.get("driver_phone", ""),
+        )
+    if state == "ASK_CONTACT_PERSON":
+        return render("ASK_CONTACT_PERSON")
+    if state == "ASK_CONTACT_NUMBER":
+        return render("ASK_CONTACT_NUMBER")
+    if state == "CONFIRM_SUMMARY":
+        return render(
+            "BOOKING_SUMMARY",
+            current_location=session.get("current_location", ""),
+            service_location=session.get("extracted_service_location", ""),
+            service_date=session.get("service_date", ""),
+            service_time=session.get("service_time_window", session.get("service_time", "")),
+            contact_person=session.get("contact_person", ""),
+            contact_number=session.get("contact_number", ""),
+        )
+    return render("ASK_CURRENT_LOCATION")
+
+
+def _handle_booking_bulk_extraction(session: dict, message: str, sender_phone: str):
+    slots = llm.extract_booking_slots(message)
+    if not _apply_booking_slots(session, message, slots):
+        return None  # nothing extra found — let the normal handler run
+
+    next_state = _next_missing_booking_state(session)
+    session["current_state"] = next_state
+    prompt = _prompt_for_booking_state(session, next_state)
+    return session, [_msg(sender_phone, prompt)]
+
+
 def process_message(session: dict, message: str, sender_phone: str):
     """
     Entry point called by the webhook.
@@ -690,6 +891,19 @@ def process_message(session: dict, message: str, sender_phone: str):
     ):
         return _handle_general_question(session, message, sender_phone)
 
+    if (
+        state in _BOOKING_FLOW_STATES
+        and not is_payload
+        and _looks_information_dense(message)
+    ):
+        bulk_result = _handle_booking_bulk_extraction(session, message, sender_phone)
+        if bulk_result is not None:
+            updated_session, outbound = bulk_result
+            reply_text = _reply_text_for(outbound, sender_phone)
+            if reply_text:
+                updated_session["last_prompt_text"] = reply_text
+            return updated_session, outbound
+
     handler = HANDLERS.get(state, handle_start)
     updated_session, outbound = handler(session, message, sender_phone)
 
@@ -698,4 +912,3 @@ def process_message(session: dict, message: str, sender_phone: str):
         updated_session["last_prompt_text"] = reply_text
 
     return updated_session, outbound
-    return handler(session, message, sender_phone)

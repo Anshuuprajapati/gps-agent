@@ -198,7 +198,9 @@ def _is_low_confidence(confidence: str) -> bool:
 
 def _run_turn(session: dict, message: str, calling_phone: str) -> VoiceResponse:
     updated_session, outbound_messages = state_machine.process_message(session, message, calling_phone)
-    session_manager.update_session(updated_session)
+    if updated_session is not session:
+        session.clear()
+        session.update(updated_session)
 
     prompt = _dispatch_outbound(outbound_messages, calling_phone)
     vr = VoiceResponse()
@@ -277,11 +279,10 @@ async def trigger_outage_call(vehicle_no: str):
 @router.post("/answer")
 async def answer_call(To: str = Form(...)):
     phone = _normalize_phone(To)
-    session = session_manager.find_session(phone)
-    if session is None:
-        return _no_session_response()
-
-    vr = _run_turn(session, "", phone)
+    with session_manager.session_transaction(phone) as session:
+        if session is None:
+            return _no_session_response()
+        vr = _run_turn(session, "", phone)
     return Response(content=str(vr), media_type="application/xml")
 
 
@@ -293,27 +294,27 @@ async def gather_speech(
     Digits: str = Form(""),
 ):
     phone = _normalize_phone(To)
-    session = session_manager.find_session(phone)
-    if session is None:
-        return _no_session_response()
+    with session_manager.session_transaction(phone) as session:
+        if session is None:
+            return _no_session_response()
 
-    pre_state = session.get("current_state") or ""
+        pre_state = session.get("current_state") or ""
 
-    if Digits:
-        # keypad press -> translate back into the word/phrase the state's
-        # LLM classifier already knows how to handle (falls back to the
-        # raw digit if this state has no menu, harmless either way).
-        message = _DIGIT_MAP.get(pre_state, {}).get(Digits.strip(), Digits.strip())
-    else:
-        message = SpeechResult
-        if message and _is_low_confidence(Confidence):
-            vr = VoiceResponse()
-            _say_and_gather(
-                vr,
-                "Maaf kijiye, sahi se sunayi nahi diya.",
-                pre_state,
-            )
-            return Response(content=str(vr), media_type="application/xml")
+        if Digits:
+            # keypad press -> translate back into the word/phrase the state's
+            # LLM classifier already knows how to handle (falls back to the
+            # raw digit if this state has no menu, harmless either way).
+            message = _DIGIT_MAP.get(pre_state, {}).get(Digits.strip(), Digits.strip())
+        else:
+            message = SpeechResult
+            if message and _is_low_confidence(Confidence):
+                vr = VoiceResponse()
+                _say_and_gather(
+                    vr,
+                    "Maaf kijiye, sahi se sunayi nahi diya.",
+                    pre_state,
+                )
+                return Response(content=str(vr), media_type="application/xml")
 
-    vr = _run_turn(session, message, phone)
+        vr = _run_turn(session, message, phone)
     return Response(content=str(vr), media_type="application/xml")

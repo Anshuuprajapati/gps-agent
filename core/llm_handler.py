@@ -249,6 +249,41 @@ def extract_name_and_phone(current_state: str, user_message: str) -> dict:
     return {"name": result.get("name", ""), "phone": result.get("phone", "")}
 
 
+def extract_booking_slots(user_message: str) -> dict:
+    """
+    Customers frequently give several booking details in one message at
+    once ("Nagpur bypass ke paas hu, Pune jaana hai, kal subah 10 baje,
+    contact Rahul 9876543210"). This pulls out WHICHEVER of the booking
+    fields are actually present so the bot doesn't ask questions that
+    were already answered — used by state_machine's bulk-extraction fast
+    path (see _apply_booking_slots / _next_missing_booking_state).
+    Anything not mentioned comes back as an empty string.
+    """
+    result = extract_structured(
+        "BOOKING_FLOW",
+        "The customer may have given several booking details at once in "
+        "a single message: current vehicle location, destination they're "
+        "heading to, a preferred service date, a preferred time window, "
+        "a contact person's name, and/or a contact phone number. Extract "
+        "WHICHEVER of these are actually present in USER_MESSAGE — leave "
+        "anything not mentioned as an empty string, do not guess. "
+        "Resolve any date mentioned to YYYY-MM-DD format relative to "
+        "today. Return JSON with exactly these keys: "
+        '{"current_location": "", "destination_location": "", '
+        '"service_date": "", "service_time_window": "", '
+        '"contact_person": "", "contact_number": ""}',
+        user_message,
+    )
+    return {
+        "current_location": (result.get("current_location") or "").strip(),
+        "destination_location": (result.get("destination_location") or "").strip(),
+        "service_date": (result.get("service_date") or "").strip(),
+        "service_time_window": (result.get("service_time_window") or "").strip(),
+        "contact_person": (result.get("contact_person") or "").strip(),
+        "contact_number": (result.get("contact_number") or "").strip(),
+    }
+
+
 # --------------------------------------------------------- knowledge base --
 
 def is_general_question(current_state: str, user_message: str) -> str:

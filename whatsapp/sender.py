@@ -35,6 +35,10 @@ def send_message(to_phone: str, text: str = "", interactive: dict | None = None)
     response = requests.post(url, headers=headers, json=payload, timeout=15)
 
     if response.status_code >= 400:
-        print(f"[sender] Failed to send to {to_phone}: {response.status_code} {response.text}")
+        # A failed send is otherwise invisible to the customer — the bot
+        # just goes quiet from their side. This at least surfaces it
+        # loudly in the server logs; wire up real alerting (Sentry, a
+        # Slack webhook, etc.) on this branch if you need to know sooner.
+        print(f"[sender] ALERT: failed to send to {to_phone}: {response.status_code} {response.text}")
 
     return {"status_code": response.status_code, "body": response.text}
