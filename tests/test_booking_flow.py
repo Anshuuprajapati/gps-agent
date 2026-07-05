@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 
-from core.state_machine import handle_ask_expected_date, handle_ask_service_date, handle_ask_vehicle_status
+from core.state_machine import handle_ask_expected_date, handle_ask_service_date, handle_ask_vehicle_status, handle_start
 
 
 def make_session():
@@ -69,6 +69,19 @@ def test_workshop_status_uses_short_expected_date_prompt(monkeypatch):
 
     assert updated_session["current_state"] == "ASK_EXPECTED_DATE"
     assert outbound[0]["text"].strip() == "Vehicle kab tak running mein aa jayegi?"
+
+
+def test_start_unknown_root_cause_uses_vehicle_status_options(monkeypatch):
+    session = {"vehicle_no": "MH16EF9012", "last_location": "Delhi", "gpstime": "2026-07-05 10:00"}
+
+    import core.state_machine as state_machine
+
+    monkeypatch.setattr(state_machine.gps_service, "analyze_root_cause", lambda _session: "UNKNOWN")
+    updated_session, outbound = handle_start(session, "", "9999999999")
+
+    assert updated_session["current_state"] == "ASK_VEHICLE_STATUS"
+    assert "Vehicle ki current status batayein" in outbound[0]["text"]
+    assert "Vehicle abhi kis condition me hai?" in outbound[0]["text"]
 
 
 def test_expected_date_closes_with_short_confirmation(monkeypatch):

@@ -23,25 +23,6 @@ from prompts.templates import render
 PHONE_RE = re.compile(r"(\d{10,13})")
 
 
-def _normalize_phone_number(phone_str: str) -> str:
-    """
-    Normalize phone number: add country code +91 if only 10 digits provided.
-    If already has country code (11+ digits), return as-is.
-    """
-    if not phone_str:
-        return ""
-    phone_str = phone_str.strip()
-    # Extract only digits
-    digits = re.sub(r"\D", "", phone_str)
-    if len(digits) == 10:
-        # 10-digit number - add India country code
-        return "91" + digits
-    elif len(digits) >= 11:
-        # Already has country code
-        return digits
-    return phone_str  # Return as-is if doesn't match pattern
-
-
 def _msg(phone, text="", interactive: dict | None = None):
     message = {"phone": phone}
     if interactive is not None:
@@ -99,58 +80,6 @@ def add_days_to_today(days: int) -> str:
     return (datetime.now().date() + timedelta(days=days)).isoformat()
 
 
-def _format_date_for_display(value: str) -> str:
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").strftime("%d %b %Y")
-    except ValueError:
-        return value
-
-
-def _is_yes_no_message(message: str) -> bool:
-    text = message.strip().lower()
-    return text in {
-        "yes", "y", "haan", "haan ji", "ha", "haa", "haah", "okay", "ok",
-        "theek hai", "thik hai", "no", "nahi", "nahin", "n", "nope"
-    }
-
-
-def _normalize_service_date(message: str) -> str | None:
-    text = message.strip().lower()
-    if not text:
-        return None
-
-    if text in {"yes", "y", "haan", "haan ji", "ha", "haa", "haah", "okay", "ok", "theek hai", "thik hai"}:
-        return datetime.now().date().isoformat()
-
-    if any(word in text for word in ["aaj", "today", "today's"]):
-        return datetime.now().date().isoformat()
-
-    if any(word in text for word in ["kal", "tomorrow"]):
-        return (datetime.now().date() + timedelta(days=1)).isoformat()
-
-    if any(word in text for word in ["parso", "day after tomorrow"]):
-        return (datetime.now().date() + timedelta(days=2)).isoformat()
-
-    weekdays = {
-        "monday": 0,
-        "tuesday": 1,
-        "wednesday": 2,
-        "thursday": 3,
-        "friday": 4,
-        "saturday": 5,
-        "sunday": 6,
-    }
-    for day, idx in weekdays.items():
-        if day in text:
-            today_idx = datetime.now().weekday()
-            delta = (idx - today_idx) % 7
-            if delta == 0:
-                delta = 7
-            return (datetime.now().date() + timedelta(days=delta)).isoformat()
-
-    return None
-
-
 # ---------------------------------------------------------------- START ----
 
 def handle_start(session, message, sender_phone):
@@ -173,6 +102,8 @@ def handle_start(session, message, sender_phone):
     # root cause unknown from telemetry alone -> ask vehicle status directly
     session["current_state"] = "ASK_VEHICLE_STATUS"
     text = render("OTHER_ALERT", vehicle_no=session["vehicle_no"], location=location, last_update=last_update)
+    text += "\n" + render("ASK_VEHICLE_STATUS")
+    text += "\n" + render("VEHICLE_STATUS_OPTIONS")
     return session, [_msg(sender_phone, text)]
 
 
@@ -208,27 +139,13 @@ def handle_ask_handler(session, message, sender_phone):
         session["handler"] = "OWNER"
         session["current_state"] = "WAIT_DONE"
         key = "ASK_CHECK_BATTERY" if session["root_cause"] == BATTERY_ISSUE else "ASK_CHECK_POWER"
-        # Generate contextual response acknowledging their choice
-        response = llm.generate_contextual_response(
-            session, message, "ASK_HANDLER", 
-            missing_fields=["battery_status" if session["root_cause"] == BATTERY_ISSUE else "power_status"],
-            root_cause=session["root_cause"]
-        )
-        # If LLM response is too short or generic, append the actual instruction
-        if len(response.split("\n")) < 2:
-            response += "\n" + render(key)
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render(key))]
 
     if choice == "DRIVER":
         return _start_driver_handoff(session, sender_phone)
 
-    # Unclear response - use LLM to generate natural nudge
-    response = llm.generate_contextual_response(
-        session, message, "ASK_HANDLER",
-        missing_fields=["handler_choice"],
-        root_cause=session["root_cause"]
-    )
-    return session, [_msg(sender_phone, response)]
+    text = render("BATTERY_ALERT", vehicle_no=session["vehicle_no"], location=session.get("last_location") or session.get("current_location") or "N/A", last_update=session.get("gpstime") or session.get("timestamp") or "N/A") if session["root_cause"] == BATTERY_ISSUE else render("MAIN_POWER_ALERT", vehicle_no=session["vehicle_no"], location=session.get("last_location") or session.get("current_location") or "N/A", last_update=session.get("gpstime") or session.get("timestamp") or "N/A")
+    return session, [_button_message(sender_phone, render("FALLBACK") + "\nReply: SELF ya DRIVER", [("PAYLOAD_SELF", "Self"), ("PAYLOAD_DRIVER", "Driver")])]
 
 
 # ----------------------------------------------------------- DRIVER_CONFIRM
@@ -253,12 +170,7 @@ def handle_driver_confirm(session, message, sender_phone):
 
     if answer == "NO":
         session["current_state"] = "ASK_NEW_DRIVER"
-        # Generate contextual response for getting new driver info
-        response = llm.generate_contextual_response(
-            session, message, "DRIVER_CONFIRM",
-            missing_fields=["new_driver_details"],
-        )
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, "Thik hai, naye driver ka naam aur mobile number bhejein.")]
 
     text = render("SHOW_DRIVER_DETAILS", driver_name=session.get("driver_name", ""), driver_phone=session.get("driver_phone", ""))
     return session, [_button_message(sender_phone, text, [("PAYLOAD_YES", "YES"), ("PAYLOAD_NO", "NO")])]
@@ -271,9 +183,7 @@ def handle_ask_new_driver(session, message, sender_phone):
     phone_match = PHONE_RE.search(extracted.get("phone", "") or message)
 
     if extracted.get("name") and phone_match:
-        # Normalize phone number (add 91 if 10 digits)
-        normalized_phone = _normalize_phone_number(phone_match.group(1))
-        session = driver_service.update_driver_details(session, extracted["name"], normalized_phone)
+        session = driver_service.update_driver_details(session, extracted["name"], phone_match.group(1))
         session = driver_service.transfer_to_driver(session)
         session["current_state"] = "WAIT_DONE"
         owner_msg = _msg(session["phone_number"], render("TRANSFER_DONE_OWNER"))
@@ -282,12 +192,7 @@ def handle_ask_new_driver(session, message, sender_phone):
         driver_msg = _msg(session["driver_phone"], driver_intro + "\n" + render(key))
         return session, [owner_msg, driver_msg]
 
-    # Generate contextual nudge for valid driver details
-    response = llm.generate_contextual_response(
-        session, message, "ASK_NEW_DRIVER",
-        missing_fields=["driver_name", "driver_phone"],
-    )
-    return session, [_msg(sender_phone, response)]
+    return session, [_msg(sender_phone, "Naam aur 10-digit mobile number dono bhejein, jaise: Ramesh 9876543210")]
 
 
 # --------------------------------------------------------------- WAIT_DONE --
@@ -319,15 +224,7 @@ def handle_wait_done(session, message, sender_phone):
 
     if intent == "NEED_HELP":
         key = "BATTERY_HELP_STEPS" if session["root_cause"] == BATTERY_ISSUE else "MAIN_POWER_HELP_STEPS"
-        # Generate contextual help response
-        response = llm.generate_nudge_or_help_response(
-            session, "WAIT_DONE",
-            issue_type="battery" if session["root_cause"] == BATTERY_ISSUE else "power",
-            context=f"User asked for help with {session['root_cause']}"
-        )
-        # Append the template help steps
-        response += "\n\n" + render(key)
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render(key))]
 
     if intent == "WANT_DRIVER":
         return _start_driver_handoff(session, sender_phone)
@@ -335,26 +232,16 @@ def handle_wait_done(session, message, sender_phone):
     if re.search(r"\b(kharab|toot|broken|repair|replace|damage|damaged|fault)\b", message.lower()):
         session["current_state"] = "ASK_PHYSICAL_DAMAGE"
         damage_prompt = "ASK_PHYSICAL_DAMAGE_MAIN_POWER" if session["root_cause"] == MAIN_POWER_DISCONNECTED else "ASK_PHYSICAL_DAMAGE"
-        # Generate contextual response acknowledging damage
-        response = llm.generate_contextual_response(
-            session, message, "WAIT_DONE",
-            missing_fields=["physical_damage_confirmation"],
-            root_cause=session["root_cause"]
-        )
-        return session, [_msg(sender_phone, response + "\n" + render(damage_prompt))]
+        return session, [_button_message(sender_phone, render(damage_prompt), [("PAYLOAD_YES", "YES"), ("PAYLOAD_NO", "NO")])]
 
-    # Unclear - generate nudge to continue workflow
-    response = llm.generate_contextual_response(
-        session, message, "WAIT_DONE",
-        missing_fields=["completion_status"],
-        root_cause=session["root_cause"]
-    )
-    return session, [_msg(sender_phone, response)]
+    return session, [_msg(sender_phone, render("WAIT_DONE_NUDGE"))]
 
 
 # --------------------------------------------------------- ASK_PHYSICAL_DAMAGE
 
 def handle_ask_physical_damage(session, message, sender_phone):
+    answer = llm.classify_yes_no(session["current_state"], message)
+
     payload = _normalize_payload(message)
     if payload == "PAYLOAD_YES":
         answer = "YES"
@@ -366,25 +253,12 @@ def handle_ask_physical_damage(session, message, sender_phone):
     if answer == "YES":
         session["physical_damage"] = "YES"
         session["current_state"] = "ASK_CURRENT_LOCATION"
-        # Generate contextual response acknowledging damage
-        response = llm.generate_contextual_response(
-            session, message, "ASK_PHYSICAL_DAMAGE",
-            missing_fields=["current_location"],
-        )
-        if "location" not in response.lower():
-            response += "\n" + render("ASK_CURRENT_LOCATION")
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
 
     if answer == "NO":
         session["current_state"] = "WAIT_DONE"
         key = "ASK_CHECK_BATTERY" if session["root_cause"] == BATTERY_ISSUE else "ASK_CHECK_POWER"
-        # Generate contextual response to retry
-        response = llm.generate_contextual_response(
-            session, message, "ASK_PHYSICAL_DAMAGE",
-            missing_fields=["completion_status"],
-        )
-        response += "\n" + render(key)
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, "Thik hai, ek baar aur try kijiye. " + render(key))]
 
     damage_prompt = "ASK_PHYSICAL_DAMAGE_MAIN_POWER" if session["root_cause"] == MAIN_POWER_DISCONNECTED else "ASK_PHYSICAL_DAMAGE"
     return session, [_button_message(sender_phone, render(damage_prompt), [("PAYLOAD_YES", "YES"), ("PAYLOAD_NO", "NO")])]
@@ -402,32 +276,13 @@ def handle_ask_vehicle_status(session, message, sender_phone):
 
     if status == "ACCIDENT":
         session["current_state"] = "ASK_EXPECTED_DATE"
-        # Generate contextual response acknowledging accident
-        response = llm.generate_contextual_response(
-            session, message, "ASK_VEHICLE_STATUS",
-            missing_fields=["accident_recovery_date"],
-        )
-        if "date" not in response.lower():
-            response += "\n" + render("ASK_EXPECTED_DATE_ACCIDENT")
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render("ASK_EXPECTED_DATE_ACCIDENT"))]
 
     if status in ("RUNNING", "GPS_DAMAGED", "GPS_REMOVED"):
         session["current_state"] = "ASK_CURRENT_LOCATION"
-        # Generate contextual response and ask for location
-        response = llm.generate_contextual_response(
-            session, message, "ASK_VEHICLE_STATUS",
-            missing_fields=["current_location"],
-        )
-        if "location" not in response.lower():
-            response += "\n" + render("ASK_CURRENT_LOCATION")
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
 
-    # Unclear - generate contextual nudge
-    response = llm.generate_contextual_response(
-        session, message, "ASK_VEHICLE_STATUS",
-        missing_fields=["vehicle_status"],
-    )
-    return session, [_msg(sender_phone, response)]
+    return session, [_msg(sender_phone, render("FALLBACK") + "\n" + render("ASK_VEHICLE_STATUS"))]
 
 
 # ---------------------------------------------------------- ASK_EXPECTED_DATE
@@ -435,11 +290,11 @@ def handle_ask_vehicle_status(session, message, sender_phone):
 def handle_ask_expected_date(session, message, sender_phone):
     date_value = llm.extract_date(session["current_state"], message)
     if not date_value:
-        return session, [_msg(sender_phone, render("ASK_EXPECTED_DATE"))]
+        return session, [_msg(sender_phone, "Date samajh nahi aayi, kripya dobara bhejein.")]
 
     session["extracted_appointment_date"] = date_value
     session["current_state"] = "COMPLETED"
-    return session, [_msg(sender_phone, render("SAVE_DATE_CLOSE", date=_format_date_for_display(date_value)))]
+    return session, [_msg(sender_phone, render("SAVE_DATE_CLOSE", date=date_value))]
 
 
 # ---------------------------------------------------- SERVICE BOOKING STATES
@@ -467,14 +322,14 @@ def handle_ask_service_city_confirmation(session, message, sender_phone):
         session["extracted_service_location"] = session.get("destination_location", "Delhi") or "Delhi"
         session["current_state"] = "ASK_SERVICE_DATE"
         session["service_date_step"] = 0
-        return session, [_msg(sender_phone, render("ASK_SERVICE_DATE"))]
+        return session, [_msg(sender_phone, get_service_date_prompt())]
 
     if answer == "NO":
         session["service_city_confirmed"] = "FALSE"
         session["current_state"] = "ASK_SERVICE_CITY_PREFERENCE"
         return session, [_msg(sender_phone, render("ASK_PREFERRED_SERVICE_CITY"))]
 
-    return session, [_msg(sender_phone, render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=session.get("destination_location", "Delhi")))]
+    return session, [_msg(sender_phone, render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=session.get("destination_location", "Delhi") or "Delhi"))]
 
 
 def handle_ask_service_city_preference(session, message, sender_phone):
@@ -483,14 +338,11 @@ def handle_ask_service_city_preference(session, message, sender_phone):
     session["service_city_confirmed"] = "FALSE"
     session["current_state"] = "ASK_SERVICE_DATE"
     session["service_date_step"] = 0
-    return session, [_msg(sender_phone, render("ASK_SERVICE_DATE"))]
+    return session, [_msg(sender_phone, get_service_date_prompt())]
 
 
 def handle_ask_service_date(session, message, sender_phone):
-    value = _normalize_service_date(message)
-    if not value:
-        value = llm.extract_date(session["current_state"], message)
-
+    value = llm.extract_date(session["current_state"], message)
     if value:
         session["service_date"] = value
         session["current_state"] = "ASK_SERVICE_TIME_WINDOW"
@@ -498,16 +350,22 @@ def handle_ask_service_date(session, message, sender_phone):
 
     answer = llm.classify_yes_no(session["current_state"], message)
     if answer == "YES":
-        session["service_date"] = datetime.now().date().isoformat()
+        prompt = get_service_date_prompt()
+        if "aaj" in prompt:
+            session["service_date"] = datetime.now().date().isoformat()
+        else:
+            session["service_date"] = (datetime.now().date() + timedelta(days=1)).isoformat()
         session["current_state"] = "ASK_SERVICE_TIME_WINDOW"
         return session, [_msg(sender_phone, render("ASK_SERVICE_TIME_WINDOW"))]
 
     if answer == "NO":
         session["service_date_step"] = 1
         session["current_state"] = "ASK_SERVICE_DATE_OPTIONS"
-        return session, [_msg(sender_phone, render("ASK_SERVICE_DATE"))]
+        return session, [_msg(sender_phone, get_service_date_options_prompt())]
 
-    return session, [_msg(sender_phone, render("ASK_SERVICE_DATE"))]
+    session["service_date_step"] = 1
+    session["current_state"] = "ASK_SERVICE_DATE_OPTIONS"
+    return session, [_msg(sender_phone, get_service_date_options_prompt())]
 
 
 def handle_ask_service_date_options(session, message, sender_phone):
@@ -519,33 +377,16 @@ def handle_ask_service_date_options(session, message, sender_phone):
     elif raw in ("2", "2️⃣"):
         date_value = add_days_to_today(4)
     elif raw in ("3", "3️⃣"):
-        # Generate contextual response asking for custom date
-        response = llm.generate_contextual_response(
-            session, message, "ASK_SERVICE_DATE_OPTIONS",
-            missing_fields=["specific_custom_date"],
-        )
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render("ASK_SERVICE_DATE_CUSTOM"))]
     else:
         date_value = llm.extract_date(session["current_state"], message)
 
     if date_value:
         session["service_date"] = date_value
         session["current_state"] = "ASK_SERVICE_TIME_WINDOW"
-        # Generate contextual response acknowledging the selected date
-        response = llm.generate_contextual_response(
-            session, message, "ASK_SERVICE_DATE_OPTIONS",
-            missing_fields=["service_time_window"],
-        )
-        if "time" not in response.lower() and "baje" not in response.lower():
-            response += "\n" + render("ASK_SERVICE_TIME_WINDOW")
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render("ASK_SERVICE_TIME_WINDOW"))]
 
-    # Generate contextual nudge to try again
-    response = llm.generate_contextual_response(
-        session, message, "ASK_SERVICE_DATE_OPTIONS",
-        missing_fields=["valid_service_date"],
-    )
-    return session, [_msg(sender_phone, response)]
+    return session, [_msg(sender_phone, get_service_date_options_prompt())]
 
 
 def handle_ask_service_time_window(session, message, sender_phone):
@@ -556,14 +397,11 @@ def handle_ask_service_time_window(session, message, sender_phone):
     session["service_time_window"] = value
     if (session.get("driver_name") or session.get("driver_phone")) and not session.get("driver_contact_confirmed"):
         session["current_state"] = "ASK_DRIVER_CONTACT_CONFIRMATION"
-        return session, [_msg(
-            sender_phone,
-            render(
-                "ASK_DRIVER_CONTACT_CONFIRMATION",
-                driver_name=session.get("driver_name", ""),
-                driver_phone=session.get("driver_phone", ""),
-            ),
-        )]
+        return session, [_msg(sender_phone, render(
+            "ASK_DRIVER_CONTACT_CONFIRMATION",
+            driver_name=session.get("driver_name", ""),
+            driver_phone=session.get("driver_phone", ""),
+        ))]
 
     session["current_state"] = "ASK_CONTACT_PERSON"
     return session, [_msg(sender_phone, render("ASK_CONTACT_PERSON"))]
@@ -614,11 +452,6 @@ def handle_ask_alternate_contact(session, message, sender_phone):
         session["contact_person"] = "NOT_PROVIDED"
         session["contact_number"] = "NOT_PROVIDED"
         session["current_state"] = "CONFIRM_SUMMARY"
-        # Generate contextual response when no alternate contact
-        response = llm.generate_contextual_response(
-            session, message, "ASK_ALTERNATE_CONTACT",
-            missing_fields=[],
-        )
         text = render(
             "BOOKING_SUMMARY",
             current_location=session.get("current_location", ""),
@@ -628,22 +461,14 @@ def handle_ask_alternate_contact(session, message, sender_phone):
             contact_person=session.get("contact_person", "NOT_PROVIDED"),
             contact_number=session.get("contact_number", "NOT_PROVIDED"),
         )
-        response += "\n\n" + text
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, text)]
 
     extracted = llm.extract_name_and_phone(session["current_state"], message)
     phone_match = PHONE_RE.search(extracted.get("phone", "") or message)
     if phone_match:
-        # Normalize phone number (add 91 if 10 digits)
-        normalized_phone = _normalize_phone_number(phone_match.group(1))
-        session["contact_number"] = normalized_phone
+        session["contact_number"] = phone_match.group(1)
         session["contact_person"] = extracted.get("name") or message
         session["current_state"] = "CONFIRM_SUMMARY"
-        # Generate contextual response confirming alternate contact
-        response = llm.generate_contextual_response(
-            session, message, "ASK_ALTERNATE_CONTACT",
-            missing_fields=[],
-        )
         text = render(
             "BOOKING_SUMMARY",
             current_location=session.get("current_location", ""),
@@ -653,15 +478,9 @@ def handle_ask_alternate_contact(session, message, sender_phone):
             contact_person=session.get("contact_person", ""),
             contact_number=session.get("contact_number", ""),
         )
-        response += "\n\n" + text
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, text)]
 
-    # Generate contextual nudge for valid contact details
-    response = llm.generate_contextual_response(
-        session, message, "ASK_ALTERNATE_CONTACT",
-        missing_fields=["valid_contact_details"],
-    )
-    return session, [_msg(sender_phone, response)]
+    return session, [_msg(sender_phone, render("INVALID_NUMBER") + "\n" + render("ASK_ALTERNATE_CONTACT"))]
 
 
 def handle_ask_contact_person(session, message, sender_phone):
@@ -671,14 +490,7 @@ def handle_ask_contact_person(session, message, sender_phone):
         value = f"Driver ({session['driver_name']})"
     session["contact_person"] = value or message
     session["current_state"] = "ASK_CONTACT_NUMBER"
-    # Generate contextual response acknowledging the contact person
-    response = llm.generate_contextual_response(
-        session, message, "ASK_CONTACT_PERSON",
-        missing_fields=["contact_number"],
-    )
-    if "number" not in response.lower() and "phone" not in response.lower():
-        response += "\n" + render("ASK_CONTACT_NUMBER")
-    return session, [_msg(sender_phone, response)]
+    return session, [_msg(sender_phone, render("ASK_CONTACT_NUMBER"))]
 
 
 def handle_ask_booking_correction(session, message, sender_phone):
@@ -686,9 +498,7 @@ def handle_ask_booking_correction(session, message, sender_phone):
     raw = message.strip().lower()
 
     if PHONE_RE.search(message):
-        # Normalize phone number (add 91 if 10 digits)
-        normalized_phone = _normalize_phone_number(PHONE_RE.search(message).group(1))
-        session["contact_number"] = normalized_phone
+        session["contact_number"] = PHONE_RE.search(message).group(1)
         updated = True
 
     if "service location" in raw or ("service" in raw and "location" in raw):
@@ -735,12 +545,7 @@ def handle_ask_booking_correction(session, message, sender_phone):
 
     if not updated:
         session["current_state"] = "ASK_BOOKING_CORRECTION"
-        # Generate contextual nudge for valid corrections
-        response = llm.generate_contextual_response(
-            session, message, "ASK_BOOKING_CORRECTION",
-            missing_fields=["valid_correction_details"],
-        )
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, "Koi sahi detail nahi mili. Kripya sirf woh detail bhejein jo aap update karna chahte hain, jaise 'Service city Delhi' ya 'Time 5 baje'.")]
 
     session["current_state"] = "CONFIRM_SUMMARY"
     text = render(
@@ -758,16 +563,9 @@ def handle_ask_booking_correction(session, message, sender_phone):
 def handle_ask_contact_number(session, message, sender_phone):
     match = PHONE_RE.search(message)
     if not match:
-        # Generate contextual nudge for valid phone number
-        response = llm.generate_contextual_response(
-            session, message, "ASK_CONTACT_NUMBER",
-            missing_fields=["valid_contact_number"],
-        )
-        return session, [_msg(sender_phone, response)]
+        return session, [_msg(sender_phone, render("INVALID_NUMBER"))]
 
-    # Normalize phone number (add 91 if 10 digits)
-    normalized_phone = _normalize_phone_number(match.group(1))
-    session["contact_number"] = normalized_phone
+    session["contact_number"] = match.group(1)
     session["current_state"] = "CONFIRM_SUMMARY"
     text = render(
         "BOOKING_SUMMARY",
@@ -778,13 +576,7 @@ def handle_ask_contact_number(session, message, sender_phone):
         contact_person=session.get("contact_person", ""),
         contact_number=session.get("contact_number", ""),
     )
-    # Generate contextual acknowledgment before showing summary
-    response = llm.generate_contextual_response(
-        session, message, "ASK_CONTACT_NUMBER",
-        missing_fields=[],
-    )
-    response += "\n\n" + text
-    return session, [_msg(sender_phone, response)]
+    return session, [_msg(sender_phone, text)]
 
 
 def handle_confirm_summary(session, message, sender_phone):
@@ -793,15 +585,29 @@ def handle_confirm_summary(session, message, sender_phone):
     if answer == "YES":
         ticket = ticket_service.create_ticket(session)
         session["ticket_id"] = ticket["ticket_id"]
+        session["engineer_id"] = ticket["engineer_id"]
         session["current_state"] = "COMPLETED"
-        text = render("BOOKING_CONFIRMED", ticket_id=ticket["ticket_id"])
+        text = render(
+            "BOOKING_CONFIRMED",
+            ticket_id=ticket["ticket_id"],
+            engineer_name=ticket["engineer_name"],
+            engineer_phone=ticket["engineer_phone"],
+        )
         return session, [_msg(sender_phone, text)]
 
     if answer == "NO":
         session["current_state"] = "ASK_BOOKING_CORRECTION"
-        return session, [_msg(sender_phone, render("BOOKING_REDO"))]
+        return session, [_msg(sender_phone, render(
+            "BOOKING_CORRECTION",
+            current_location=session.get("current_location", ""),
+            service_location=session.get("extracted_service_location", ""),
+            service_date=session.get("service_date", ""),
+            service_time=session.get("service_time_window", session.get("service_time", "")),
+            contact_person=session.get("contact_person", ""),
+            contact_number=session.get("contact_number", ""),
+        ))]
 
-    return session, [_msg(sender_phone, render("BOOKING_SUMMARY", current_location=session.get("current_location", ""), service_location=session.get("extracted_service_location", ""), service_date=session.get("service_date", ""), service_time=session.get("service_time_window", session.get("service_time", "")), contact_person=session.get("contact_person", ""), contact_number=session.get("contact_number", "")))]
+    return session, [_msg(sender_phone, render("FALLBACK") + "\nReply YES ya NO.")]
 
 
 def handle_completed(session, message, sender_phone):
@@ -836,6 +642,34 @@ HANDLERS = {
 }
 
 
+def _reply_text_for(outbound: list[dict], sender_phone: str) -> str:
+    for out in outbound:
+        if out.get("phone") == sender_phone:
+            if out.get("text"):
+                return out["text"]
+            interactive = out.get("interactive") or {}
+            return interactive.get("body", {}).get("text", "")
+    return ""
+
+
+def _handle_general_question(session, message, sender_phone):
+    """
+    Answers an off-topic question (working hours, how GPS tracking works,
+    pricing, etc.) from the knowledge base, then hands the conversation
+    back to wherever it left off — current_state is never changed here,
+    and we replay the pending question so the flow isn't lost.
+    """
+    answer = llm.answer_from_knowledge_base(message)
+    pending = session.get("last_prompt_text", "")
+
+    if pending:
+        reply = f"{answer}\n\nChaliye, wapas apne case par aate hain — {pending}"
+    else:
+        reply = answer
+
+    return session, [_msg(sender_phone, reply)]
+
+
 def process_message(session: dict, message: str, sender_phone: str):
     """
     Entry point called by the webhook.
@@ -847,5 +681,21 @@ def process_message(session: dict, message: str, sender_phone: str):
     if session.get("handler", "OWNER") == "OWNER" and state not in ("DRIVER_CONFIRM", "ASK_NEW_DRIVER", "ASK_HANDLER") and _is_driver_request(message):
         return _start_driver_handoff(session, sender_phone)
 
+    is_payload = bool(_normalize_payload(message))
+    if (
+        message.strip()
+        and not is_payload
+        and state not in ("START", "COMPLETED")
+        and llm.is_general_question(state, message) == "GENERAL_QUESTION"
+    ):
+        return _handle_general_question(session, message, sender_phone)
+
     handler = HANDLERS.get(state, handle_start)
+    updated_session, outbound = handler(session, message, sender_phone)
+
+    reply_text = _reply_text_for(outbound, sender_phone)
+    if reply_text:
+        updated_session["last_prompt_text"] = reply_text
+
+    return updated_session, outbound
     return handler(session, message, sender_phone)

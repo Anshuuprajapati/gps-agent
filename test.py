@@ -38,8 +38,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import state_machine as sm          # noqa: E402
 from core import session_manager               # noqa: E402
+from core import llm_handler                   # noqa: E402
 from services import gps_service, ticket_service, engineer_service  # noqa: E402
 from config import settings                    # noqa: E402
+
+_REAL_ANSWER_FROM_KB = llm_handler.answer_from_knowledge_base
 
 
 # ============================================================== fixtures ==
@@ -78,9 +81,15 @@ def no_real_llm(monkeypatch):
     for name in (
         "classify_yes_no", "classify_wait_done_reply", "classify_self_or_driver",
         "classify_vehicle_status", "extract_date", "extract_time",
-        "extract_free_text", "extract_name_and_phone",
+        "extract_free_text", "extract_name_and_phone", "answer_from_knowledge_base",
     ):
         monkeypatch.setattr(sm.llm, name, _boom, raising=True)
+
+    # is_general_question runs on EVERY process_message() call regardless of
+    # state, so default it to "not a general question" rather than making
+    # every existing test mock it — tests that specifically exercise the
+    # knowledge-base path override this per-test.
+    monkeypatch.setattr(sm.llm, "is_general_question", MagicMock(return_value="FLOW_REPLY"), raising=True)
     yield
 
 
@@ -662,6 +671,80 @@ class TestAPIVerificationEveryStep:
         session["main_powervoltage"] = "12.6"
         session, outbound = sm.handle_wait_done(session, "Done", "919999900001")
         assert session["current_state"] == "ASK_VEHICLE_STATUS"  # freshly re-checked
+
+
+# =================================== 19. KNOWLEDGE BASE (GENERAL QUESTIONS) =
+
+class TestKnowledgeBase:
+    def test_general_question_answered_without_changing_state(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "is_general_question", MagicMock(return_value="GENERAL_QUESTION"))
+        monkeypatch.setattr(
+            sm.llm, "answer_from_knowledge_base",
+            MagicMock(return_value="Hamari support team subah 9 se raat 9 baje tak available hai."),
+        )
+        session = base_session(
+            current_state="ASK_SERVICE_DATE",
+            root_cause=gps_service.BATTERY_ISSUE,
+            last_prompt_text="Service kab schedule karni hai?",
+        )
+
+        session, outbound = sm.process_message(session, "aap kitne baje tak available ho?", "919999900001")
+
+        assert session["current_state"] == "ASK_SERVICE_DATE"  # untouched
+        assert "9 se raat 9" in outbound[0]["text"]
+        assert "Service kab schedule karni hai?" in outbound[0]["text"]  # pending question replayed
+
+    def test_flow_reply_is_not_treated_as_general_question(self, monkeypatch):
+        classify_mock = MagicMock(return_value="YES")
+        monkeypatch.setattr(sm.llm, "classify_yes_no", classify_mock)
+        general_q_mock = MagicMock(return_value="FLOW_REPLY")
+        monkeypatch.setattr(sm.llm, "is_general_question", general_q_mock)
+
+        session = base_session(current_state="ASK_PHYSICAL_DAMAGE", root_cause=gps_service.BATTERY_ISSUE)
+        session, outbound = sm.process_message(session, "haan sahi hai", "919999900001")
+
+        general_q_mock.assert_called_once()
+        assert session["current_state"] == "ASK_CURRENT_LOCATION"
+
+    def test_button_payloads_skip_general_question_check_entirely(self, monkeypatch):
+        general_q_mock = MagicMock(side_effect=AssertionError("should not classify a raw button payload"))
+        monkeypatch.setattr(sm.llm, "is_general_question", general_q_mock)
+
+        session = base_session(current_state="ASK_HANDLER", root_cause=gps_service.BATTERY_ISSUE, driver_name="Deepak", driver_phone="9871234560")
+        session, outbound = sm.process_message(session, "PAYLOAD_DRIVER", "919999900001")
+
+        assert session["current_state"] == "DRIVER_CONFIRM"
+
+    def test_last_prompt_text_is_recorded_after_every_normal_turn(self, monkeypatch):
+        session = base_session(current_state="ASK_CURRENT_LOCATION", root_cause=gps_service.BATTERY_ISSUE)
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Nagpur"))
+
+        session, outbound = sm.process_message(session, "Nagpur mein hu", "919999900001")
+
+        assert session["last_prompt_text"] == outbound[0]["text"]
+
+    def test_answer_from_knowledge_base_uses_real_file_and_stays_grounded(self, monkeypatch):
+        """
+        Exercises the real (non-mocked) answer_from_knowledge_base against
+        the actual data/knowledge_base.md shipped with the project — but
+        stubs the underlying LLM call itself so this test doesn't need a
+        live API key or network access.
+        """
+        monkeypatch.setattr(sm.llm, "answer_from_knowledge_base", _REAL_ANSWER_FROM_KB)
+
+        fake_llm_response = '{"value": "Hamari support team subah 9 baje se raat 9 baje tak available hai."}'
+        monkeypatch.setattr(llm_handler, "_call_llm", lambda *_a, **_k: fake_llm_response)
+
+        answer = sm.llm.answer_from_knowledge_base("aap kitne baje available ho?")
+        assert "9 baje" in answer
+
+    def test_missing_knowledge_base_file_falls_back_gracefully(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "answer_from_knowledge_base", _REAL_ANSWER_FROM_KB)
+        monkeypatch.setattr(settings, "KNOWLEDGE_BASE_PATH", "/tmp/does_not_exist_kb.md")
+        monkeypatch.setattr(llm_handler, "_kb_cache", {"text": None})
+
+        answer = sm.llm.answer_from_knowledge_base("kuch bhi poochna hai")
+        assert "available nahi hai" in answer
 
 
 if __name__ == "__main__":

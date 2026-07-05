@@ -69,7 +69,13 @@ T = {
     "ASK_PHYSICAL_DAMAGE_MAIN_POWER": "Kya wiring ya fuse physically damage hai? Reply YES ya NO.",
 
     "ASK_VEHICLE_STATUS": (
-        "Samajh gaya. Ek aur cheez bataiye — vehicle abhi kis condition me hai?"
+        "Samajh gaya. Ek aur cheez bataiye — Vehicle abhi kis condition me hai?"
+    ),
+    "VEHICLE_STATUS_OPTIONS": (
+        "Vehicle status options:\n"
+        "1) Workshop me\n"
+        "2) Accident hua hai\n"
+        "3) Vehicle chal rahi hai"
     ),
 
     "ASK_EXPECTED_DATE": "Vehicle kab tak running mein aa jayegi?",

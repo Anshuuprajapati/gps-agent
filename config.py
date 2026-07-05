@@ -39,6 +39,7 @@ class Settings:
     SESSIONS_CSV = os.getenv("SESSIONS_CSV", "data/mock_sessions.csv")
     TICKETS_CSV = os.getenv("TICKETS_CSV", "data/tickets.csv")
     ENGINEERS_CSV = os.getenv("ENGINEERS_CSV", "data/engineers.csv")
+    KNOWLEDGE_BASE_PATH = os.getenv("KNOWLEDGE_BASE_PATH", "data/knowledge_base.md")
 
     # Twilio Voice (outbound calling agent)
     TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -48,6 +49,19 @@ class Settings:
     # call this PUBLIC_URL (like outbound.js did), others TWILIO_WEBHOOK_URL
     # — accept either so nothing breaks depending on which .env you copy.
     PUBLIC_URL = (os.getenv("PUBLIC_URL", "") or os.getenv("TWILIO_WEBHOOK_URL", "")).rstrip("/")
+
+    # Voice quality (TTS) — Google/Polly neural voices sound far more
+    # natural than Twilio's default. See Twilio's <Say> voice list for
+    # other options (e.g. "Google.hi-IN-Wavenet-A/B/C", "Polly.Aditi").
+    TWILIO_VOICE_NAME = os.getenv("TWILIO_VOICE_NAME", "Google.hi-IN-Wavenet-D")
+    TWILIO_VOICE_LANGUAGE = os.getenv("TWILIO_VOICE_LANGUAGE", "hi-IN")
+
+    # Speech recognition tuning
+    # "phone_call" is tuned for call-quality audio (vs. dictation).
+    TWILIO_SPEECH_MODEL = os.getenv("TWILIO_SPEECH_MODEL", "phone_call")
+    # Below this confidence (0.0-1.0), a transcript is treated as unreliable
+    # and the caller is asked to repeat instead of processing bad input.
+    SPEECH_CONFIDENCE_THRESHOLD = float(os.getenv("SPEECH_CONFIDENCE_THRESHOLD", "0.4"))
 
     # Server
     PORT = int(os.getenv("PORT", "8000"))
