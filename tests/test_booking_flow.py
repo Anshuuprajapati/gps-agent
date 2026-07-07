@@ -71,7 +71,7 @@ def test_workshop_status_uses_short_expected_date_prompt(monkeypatch):
     assert outbound[0]["text"].strip() == "Vehicle kab tak running mein aa jayegi?"
 
 
-def test_start_unknown_root_cause_uses_vehicle_status_options(monkeypatch):
+def test_start_unknown_root_cause_does_not_show_vehicle_status_options(monkeypatch):
     session = {"vehicle_no": "MH16EF9012", "last_location": "Delhi", "gpstime": "2026-07-05 10:00"}
 
     import core.state_machine as state_machine
@@ -81,7 +81,8 @@ def test_start_unknown_root_cause_uses_vehicle_status_options(monkeypatch):
 
     assert updated_session["current_state"] == "ASK_VEHICLE_STATUS"
     assert "Vehicle ki current status batayein" in outbound[0]["text"]
-    assert "Vehicle abhi kis condition me hai?" in outbound[0]["text"]
+    assert "Vehicle abhi kis condition me hai?" not in outbound[0]["text"]
+    assert "Vehicle status options" not in outbound[0]["text"]
 
 
 def test_expected_date_closes_with_short_confirmation(monkeypatch):

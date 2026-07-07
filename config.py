@@ -20,11 +20,15 @@ class Settings:
     META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "gps_agent_verify_123")
     META_API_VERSION = os.getenv("META_API_VERSION", "v20.0")
 
-    # LLM provider: "groq" (free, recommended), "gemini" (free), "ollama" (free/local), or "anthropic" (paid)
-    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
+    # LLM provider: "bedrock" (OpenAI-compatible endpoint), "gemini", "ollama", or "anthropic"
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "bedrock")
 
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    BEDROCK_API_KEY = os.getenv("BEDROCK_API_KEY", "")
+    BEDROCK_BASE_URL = os.getenv(
+        "BEDROCK_BASE_URL",
+        "https://bedrock-mantle.eu-north-1.api.aws/v1/chat/completions",
+    )
+    BEDROCK_MODEL = os.getenv("BEDROCK_MODEL", "openai.gpt-oss-120b")
 
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")

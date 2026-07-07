@@ -1042,6 +1042,28 @@ class TestBulkBookingExtraction:
 
         assert session["current_state"] == "ASK_EXPECTED_DATE"
 
+    def test_running_status_reuses_location_and_destination_from_status_message(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="RUNNING"))
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "Delhi",
+            "destination_location": "Pune",
+            "service_date": "",
+            "service_time_window": "",
+            "contact_person": "",
+            "contact_number": "",
+        }))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.handle_ask_vehicle_status(
+            session,
+            "Delhi se Pune jaa rahi hai",
+            "919999900001",
+        )
+
+        assert session["current_location"] == "Delhi"
+        assert session["destination_location"] == "Pune"
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+
     def test_bulk_extraction_works_identically_through_voice_path(self, monkeypatch):
         """
         Voice and WhatsApp share process_message() — a long spoken

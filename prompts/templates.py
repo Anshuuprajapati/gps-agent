@@ -55,7 +55,7 @@ T = {
         "Driver details:\n"
         "👤 {driver_name}\n"
         "📞 {driver_phone}\n\n"
-        "Kya ye details sahi hain? (Yes/No)"
+        "Kya ye details sahi hain?"
     ),
     "TRANSFER_DONE_OWNER": "Dhanyawaad! Hum ab aapke driver se seedha baat kar rahe hain. Update milte hi aapko batayenge.",
     "TRANSFER_DONE_DRIVER": (
@@ -65,8 +65,8 @@ T = {
 
     "GPS_FIXED_CLOSE": "Badhiya! GPS wapas online aa gaya hai. Case close kar diya gaya hai. Dhanyawaad!",
 
-    "ASK_PHYSICAL_DAMAGE": "Kya battery/wiring physically kharab hai ya replace/repair karni padegi? Reply YES ya NO.",
-    "ASK_PHYSICAL_DAMAGE_MAIN_POWER": "Kya wiring ya fuse physically damage hai? Reply YES ya NO.",
+    "ASK_PHYSICAL_DAMAGE": "Kya battery/wiring physically kharab hai ya replace/repair karni padegi?",
+    "ASK_PHYSICAL_DAMAGE_MAIN_POWER": "Kya wiring ya fuse physically damage hai?",
 
     "ASK_VEHICLE_STATUS": (
         "Samajh gaya. Ek aur cheez bataiye — Vehicle abhi kis condition me hai?"
@@ -85,7 +85,7 @@ T = {
 
     "ASK_CURRENT_LOCATION": "Vehicle abhi kis location par hai?",
     "ASK_DESTINATION_LOCATION": "Destination kya hai?",
-    "ASK_SERVICE_CITY_SUGGESTION": "Kya {suggested_city} mein service book karni hai? (Yes/No)",
+    "ASK_SERVICE_CITY_SUGGESTION": "Kya {suggested_city} mein service book karni hai?",
     "ASK_PREFERRED_SERVICE_CITY": "Kaun se city mein service chahiye?",
     "ASK_SERVICE_DATE": "Kis date ko service chahiye? (Aaj / Kal / 8 July / Monday)",
     "ASK_SERVICE_DATE_CUSTOM": "Kripya ek specific date ya phrase bhejein, jaise '8 July' ya 'Monday'.",
@@ -94,7 +94,7 @@ T = {
         "Driver details:\n"
         "👤 {driver_name}\n"
         "📞 {driver_phone}\n\n"
-        "Kya ye details sahi hain? (Yes/No)"
+        "Kya ye details sahi hain?"
     ),
     "ASK_ALTERNATE_CONTACT": "Kripya alternate contact person ka naam aur mobile number bhejiye.",
     "ASK_CONTACT_PERSON": "Site par engineer kis contact person se baat kare?",
@@ -109,7 +109,7 @@ T = {
         "🕒 Time: {service_time}\n"
         "👤 Driver: {contact_person}\n"
         "📞 {contact_number}\n\n"
-        "Confirm? (Yes/No)"
+        "Confirm?"
     ),
     "BOOKING_CORRECTION": (
         "Thik hai, aapke current booking details yeh hain:\n"

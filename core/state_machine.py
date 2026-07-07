@@ -313,6 +313,10 @@ def handle_ask_vehicle_status(session, message, sender_phone):
         return session, [_msg(sender_phone, render(template))]
 
     if status in ("RUNNING", "GPS_DAMAGED", "GPS_REMOVED"):
+        fast_result = _handle_booking_bulk_extraction(session, message, sender_phone)
+        if fast_result is not None:
+            return fast_result
+
         session["current_state"] = "ASK_CURRENT_LOCATION"
         return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
 
@@ -652,7 +656,7 @@ def handle_confirm_summary(session, message, sender_phone):
             contact_number=session.get("contact_number", ""),
         ))]
 
-    return session, [_msg(sender_phone, render("FALLBACK") + "\nReply YES ya NO.")]
+    return session, [_msg(sender_phone, render("FALLBACK"))]
 
 
 def handle_completed(session, message, sender_phone):

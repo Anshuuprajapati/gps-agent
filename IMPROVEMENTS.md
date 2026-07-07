@@ -165,16 +165,16 @@ Bot: "Perfect! Site par engineer kis naam ke contact person se baat karega?"
 
 ## Configuration
 
-No additional configuration needed! The system works with all existing LLM providers:
-- Groq (free, recommended)
+No additional configuration needed! The system is designed to use Bedrock by default:
+- Bedrock (OpenAI-compatible endpoint)
 - Gemini (free)
 - Ollama (free, local)
 - Anthropic (paid)
 
 Set via `.env`:
 ```
-LLM_PROVIDER=groq
-GROQ_API_KEY=xxx
+LLM_PROVIDER=bedrock
+BEDROCK_API_KEY=xxx
 ```
 
 ## Performance

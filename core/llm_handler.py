@@ -6,8 +6,8 @@ the CURRENT state, and return small structured JSON. It never decides the
 flow and it never writes the outgoing message — state_machine.py does that
 using prompts/templates.py.
 
-Supports 3 free-tier-friendly providers, switchable via .env LLM_PROVIDER:
-  - "groq"      -> free, fast, recommended default (needs GROQ_API_KEY)
+Supports providers, switchable via .env LLM_PROVIDER:
+  - "bedrock"   -> OpenAI-compatible Bedrock endpoint (needs BEDROCK_API_KEY)
   - "gemini"    -> free tier (needs GEMINI_API_KEY)
   - "ollama"    -> 100% free, runs locally, no API key needed at all
   - "anthropic" -> paid, kept as an option if you want it later
@@ -40,22 +40,27 @@ def _strip_json_fence(text: str) -> str:
 
 # ---------------------------------------------------------- provider calls --
 
-def _call_groq(user_prompt: str) -> str:
-    if "groq" not in _client_cache:
-        from groq import Groq
-        _client_cache["groq"] = Groq(api_key=settings.GROQ_API_KEY)
-    client = _client_cache["groq"]
-
-    response = client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        max_tokens=200,
-        temperature=0,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
+def _call_bedrock(user_prompt: str) -> str:
+    response = requests.post(
+        settings.BEDROCK_BASE_URL,
+        headers={
+            "Authorization": f"Bearer {settings.BEDROCK_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": settings.BEDROCK_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": 200,
+            "temperature": 0,
+        },
+        timeout=60,
     )
-    return response.choices[0].message.content
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
 
 
 def _call_gemini(user_prompt: str) -> str:
@@ -104,7 +109,7 @@ def _call_anthropic(user_prompt: str) -> str:
 
 
 PROVIDERS = {
-    "groq": _call_groq,
+    "bedrock": _call_bedrock,
     "gemini": _call_gemini,
     "ollama": _call_ollama,
     "anthropic": _call_anthropic,
@@ -112,7 +117,7 @@ PROVIDERS = {
 
 
 def _call_llm(user_prompt: str) -> str:
-    provider_fn = PROVIDERS.get(settings.LLM_PROVIDER, _call_groq)
+    provider_fn = PROVIDERS.get(settings.LLM_PROVIDER, _call_bedrock)
     return provider_fn(user_prompt)
 
 
