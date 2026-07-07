@@ -199,9 +199,12 @@ def classify_self_or_driver(current_state: str, user_message: str) -> str:
 def classify_vehicle_status(current_state: str, user_message: str) -> str:
     result = extract_structured(
         current_state,
-        "Classify the vehicle status into one of: WORKSHOP, ACCIDENT, "
-        "RUNNING, GPS_DAMAGED, GPS_REMOVED, UNCLEAR. Return "
-        "{\"value\": \"<one of these>\"}.",
+        "Classify the user's message into one of: WORKSHOP, ACCIDENT, "
+        "RUNNING, GPS_DAMAGED, GPS_REMOVED, UNCLEAR. If the message says "
+        "the vehicle is bad/broken/kharaab, classify as WORKSHOP if it refers "
+        "to the vehicle being unusable and as GPS_DAMAGED if it explicitly "
+        "mentions GPS/device/tracker being broken, damaged, or removed. "
+        "Return {\"value\": \"<one of these>\"}.",
         user_message,
     )
     return result.get("value", "UNCLEAR").upper()

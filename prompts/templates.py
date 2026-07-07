@@ -55,7 +55,6 @@ T = {
         "Driver details:\n"
         "👤 {driver_name}\n"
         "📞 {driver_phone}\n\n"
-        "Kya ye details sahi hain?"
     ),
     "TRANSFER_DONE_OWNER": "Dhanyawaad! Hum ab aapke driver se seedha baat kar rahe hain. Update milte hi aapko batayenge.",
     "TRANSFER_DONE_DRIVER": (
@@ -69,7 +68,10 @@ T = {
     "ASK_PHYSICAL_DAMAGE_MAIN_POWER": "Kya wiring ya fuse physically damage hai?",
 
     "ASK_VEHICLE_STATUS": (
-        "Samajh gaya. Ek aur cheez bataiye — Vehicle abhi kis condition me hai?"
+        "Samajh gaya. Ek baat aur bata dein — vehicle abhi kis condition mein hai?"
+    ),
+    "ASK_GPS_OR_VEHICLE": (
+        "Kya GPS kharab hai ya vehicle ka problem hai? Agar vehicle hai toh bata dein kab tak thik ho jayegi."
     ),
     "VEHICLE_STATUS_OPTIONS": (
         "Vehicle status options:\n"
@@ -84,9 +86,10 @@ T = {
     "SAVE_DATE_CLOSE": "✅ Thik hai. Humne {date} note kar liya hai.\n\nJab vehicle running mein aa jaye, hume message kar dijiye. Filhal case close kar rahe hain.\n\nDhanyavaad!",
 
     "ASK_CURRENT_LOCATION": "Vehicle abhi kis location par hai?",
-    "ASK_DESTINATION_LOCATION": "Destination kya hai?",
-    "ASK_SERVICE_CITY_SUGGESTION": "Kya {suggested_city} mein service book karni hai?",
-    "ASK_PREFERRED_SERVICE_CITY": "Kaun se city mein service chahiye?",
+    "ASK_DESTINATION_LOCATION": "Vehicle kis jagah jaa rahi hai?",
+    "ASK_GPS_REPAIR_CONFIRMATION": "Kya GPS repair ya replace karwana hai?",
+    "ASK_SERVICE_CITY_SUGGESTION": "Kya {suggested_city} mein aaj ke liye service book kar dein?",
+    "ASK_PREFERRED_SERVICE_CITY": "Kaun si city mein service chahiye?",
     "ASK_SERVICE_DATE": "Kis date ko service chahiye? (Aaj / Kal / 8 July / Monday)",
     "ASK_SERVICE_DATE_CUSTOM": "Kripya ek specific date ya phrase bhejein, jaise '8 July' ya 'Monday'.",
     "ASK_SERVICE_TIME_WINDOW": "Kis time vehicle available hogi?",
@@ -98,8 +101,8 @@ T = {
     ),
     "ASK_ALTERNATE_CONTACT": "Kripya alternate contact person ka naam aur mobile number bhejiye.",
     "ASK_CONTACT_PERSON": "Site par engineer kis contact person se baat kare?",
-    "ASK_CONTACT_NUMBER": "Contact person ka mobile number share kijiye.",
-    "INVALID_NUMBER": "Yeh number sahi nahi lag raha. Kripya 10-digit valid mobile number bhejein.",
+    "ASK_CONTACT_NUMBER": "Contact person ka mobile number bhej dein.",
+    "INVALID_NUMBER": "Yeh number sahi nahi lag raha. Kripya 10-digit valid mobile number bhej dein.",
 
     "BOOKING_SUMMARY": (
         "Booking Summary\n\n"
@@ -109,7 +112,7 @@ T = {
         "🕒 Time: {service_time}\n"
         "👤 Driver: {contact_person}\n"
         "📞 {contact_number}\n\n"
-        "Confirm?"
+        "Kya ye details sahi hain?"
     ),
     "BOOKING_CORRECTION": (
         "Thik hai, aapke current booking details yeh hain:\n"
@@ -121,14 +124,14 @@ T = {
         "Jo details galat hain unko correct karke bhejein. Aap sirf wohi detail bhej sakte hain jaise \"Service location Pune\" ya \"Time 5 baje\"."
     ),
     "BOOKING_CONFIRMED": (
-        "✅ Ticket created.\n\n"
+        "✅ Ticket create ho gaya.\n\n"
         "🆔 Ticket ID: {ticket_id}\n\n"
         "Aapki request record ho gayi hai. Hamari team aapko zarurat par contact karegi.\n"
         "Dhanyavaad!"
     ),
     "BOOKING_REDO": "Thik hai, kripya sahi detail dobara bhejein (location/date/time/contact).",
 
-    "FALLBACK": "Maaf kijiye, samajh nahi paaya. Kya aap thoda aur detail me bata sakte hain?",
+    "FALLBACK": "Maaf kijiye, samajh nahi paaya. Kya aap thoda aur detail se bata sakte hain?",
 }
 
 

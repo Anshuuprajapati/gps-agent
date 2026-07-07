@@ -71,6 +71,21 @@ def _normalize_payload(message: str) -> str:
     return ""
 
 
+def _looks_like_gps_damage(message: str) -> bool:
+    text = message.lower()
+    has_gps_terms = bool(re.search(r"\b(gps|tracker|telematics|device|antenna)\b", text))
+    has_damage_terms = bool(re.search(r"\b(kharab|khrab|kharaab|toot|broken|damaged|damage|repair|replace|fault)\b", text))
+    return has_gps_terms and has_damage_terms
+
+
+def _looks_like_vehicle_issue(message: str) -> bool:
+    text = message.lower()
+    has_vehicle_terms = bool(re.search(r"\b(gadi|vehicle|car|truck|bus)\b", text))
+    has_problem_terms = bool(re.search(r"\b(kharab|khrab|kharaab|toot|broken|problem|repair|replace|damage|damaged|fault)\b", text))
+    has_gps_terms = bool(re.search(r"\b(gps|tracker|telematics|device|antenna)\b", text))
+    return has_vehicle_terms and has_problem_terms and not has_gps_terms
+
+
 def _is_driver_request(message: str) -> bool:
     text = message.strip().lower()
     return bool(re.search(r"\b(driver se baat karo|driver se|driver ko|driver ka|driver pe|driver\b|driver\s*baat)\b", text))
@@ -294,31 +309,78 @@ def handle_ask_physical_damage(session, message, sender_phone):
 
 # ---------------------------------------------------------- ASK_VEHICLE_STATUS
 
+def _build_booking_summary(session: dict) -> str:
+    return render(
+        "BOOKING_SUMMARY",
+        current_location=session.get("current_location", ""),
+        service_location=session.get("extracted_service_location", ""),
+        service_date=session.get("service_date", ""),
+        service_time=session.get("service_time_window", session.get("service_time", "")),
+        contact_person=session.get("contact_person", ""),
+        contact_number=session.get("contact_number", ""),
+    )
+
+
+def _create_and_confirm_ticket_directly(session: dict, sender_phone: str):
+    """Create ticket directly without confirmation step. Shows summary then ticket."""
+    ticket = ticket_service.create_ticket(session)
+    session["ticket_id"] = ticket["ticket_id"]
+    session["engineer_id"] = ticket["engineer_id"]
+    session["current_state"] = "COMPLETED"
+    
+    # Show booking summary first, then ticket confirmation
+    summary_text = _build_booking_summary(session)
+    ticket_text = render(
+        "BOOKING_CONFIRMED",
+        ticket_id=ticket["ticket_id"],
+        engineer_name=ticket["engineer_name"],
+        engineer_phone=ticket["engineer_phone"],
+    )
+    return session, [_msg(sender_phone, summary_text), _msg(sender_phone, ticket_text)]
+
+
 def handle_ask_vehicle_status(session, message, sender_phone):
-    status = llm.classify_vehicle_status(session["current_state"], message)
+    payload = _normalize_payload(message)
+    if payload == "PAYLOAD_GPS":
+        status = "GPS_DAMAGED"
+    elif payload == "PAYLOAD_VEHICLE":
+        status = "WORKSHOP"
+    elif _looks_like_gps_damage(message):
+        status = "GPS_DAMAGED"
+    elif _looks_like_vehicle_issue(message):
+        session["vehicle_state"] = "UNCLEAR"
+        session["current_state"] = "ASK_VEHICLE_STATUS"
+        return session, [_button_message(sender_phone, render("ASK_GPS_OR_VEHICLE"), [("PAYLOAD_GPS", "GPS"), ("PAYLOAD_VEHICLE", "Vehicle")])]
+    else:
+        status = llm.classify_vehicle_status(session["current_state"], message)
     session["vehicle_state"] = status
 
-    if status in ("WORKSHOP", "ACCIDENT"):
-        # If the customer already said e.g. "Workshop me hai, 15 July tak
-        # ready hogi" in the same message, don't ask the date again —
-        # save it and close right here.
+    if status == "WORKSHOP":
+        # Try to extract date from the message to skip ASK_EXPECTED_DATE if available
         date_value = llm.extract_date(session["current_state"], message)
         if date_value:
             session["extracted_appointment_date"] = date_value
             session["current_state"] = "COMPLETED"
             return session, [_msg(sender_phone, render("SAVE_DATE_CLOSE", date=date_value))]
-
         session["current_state"] = "ASK_EXPECTED_DATE"
-        template = "ASK_EXPECTED_DATE_WORKSHOP" if status == "WORKSHOP" else "ASK_EXPECTED_DATE_ACCIDENT"
-        return session, [_msg(sender_phone, render(template))]
+        return session, [_msg(sender_phone, render("ASK_EXPECTED_DATE_WORKSHOP"))]
 
-    if status in ("RUNNING", "GPS_DAMAGED", "GPS_REMOVED"):
+    if status == "ACCIDENT":
+        session["current_state"] = "ASK_CURRENT_LOCATION"
+        return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
+
+    if status == "GPS_DAMAGED":
+        session["vehicle_state"] = status
+        session["current_state"] = "ASK_GPS_REPAIR_CONFIRMATION"
+        return session, [_button_message(sender_phone, render("ASK_GPS_REPAIR_CONFIRMATION"), [("PAYLOAD_YES", "Haan"), ("PAYLOAD_NO", "Nahi")])]
+
+    if status in ("RUNNING", "GPS_REMOVED"):
         fast_result = _handle_booking_bulk_extraction(session, message, sender_phone)
         if fast_result is not None:
             return fast_result
 
-        session["current_state"] = "ASK_CURRENT_LOCATION"
-        return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
+        session["current_state"] = "ASK_DESTINATION_LOCATION"
+        return session, [_msg(sender_phone, render("ASK_DESTINATION_LOCATION"))]
 
     return session, [_msg(sender_phone, render("FALLBACK") + "\n" + render("ASK_VEHICLE_STATUS"))]
 
@@ -337,9 +399,38 @@ def handle_ask_expected_date(session, message, sender_phone):
 
 # ---------------------------------------------------- SERVICE BOOKING STATES
 
+def handle_ask_gps_repair_confirmation(session, message, sender_phone):
+    payload = _normalize_payload(message)
+    if payload == "PAYLOAD_YES":
+        answer = "YES"
+    elif payload == "PAYLOAD_NO":
+        answer = "NO"
+    else:
+        answer = llm.classify_yes_no(session["current_state"], message)
+
+    if answer == "YES":
+        session["current_state"] = "ASK_CURRENT_LOCATION"
+        return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
+
+    if answer == "NO":
+        session["current_state"] = "COMPLETED"
+        return session, [_msg(sender_phone, "Thik hai. Agar baad mein service chahiye ho, hume message kar dijiye. Dhanyavaad!")]
+
+    return session, [_button_message(sender_phone, render("ASK_GPS_REPAIR_CONFIRMATION"), [("PAYLOAD_YES", "Haan"), ("PAYLOAD_NO", "Nahi")])]
+
+
 def handle_ask_current_location(session, message, sender_phone):
     value = llm.extract_free_text(session["current_state"], message, "current location")
     session["current_location"] = value or message
+
+    if session.get("vehicle_state") != "RUNNING":
+        session["destination_location"] = session.get("current_location", "")
+        session["service_city_confirmed"] = ""
+        session["service_city_question_mode"] = "TODAY"
+        session["current_state"] = "ASK_SERVICE_CITY_CONFIRMATION"
+        suggested_city = session.get("destination_location") or "Delhi"
+        return session, [_msg(sender_phone, render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=suggested_city))]
+
     session["current_state"] = "ASK_DESTINATION_LOCATION"
     return session, [_msg(sender_phone, render("ASK_DESTINATION_LOCATION"))]
 
@@ -348,6 +439,7 @@ def handle_ask_destination_location(session, message, sender_phone):
     value = llm.extract_free_text(session["current_state"], message, "destination location")
     session["destination_location"] = value or message
     session["service_city_confirmed"] = ""
+    session["service_city_question_mode"] = "TODAY"
     session["current_state"] = "ASK_SERVICE_CITY_CONFIRMATION"
     suggested_city = session["destination_location"] or "Delhi"
     return session, [_msg(sender_phone, render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=suggested_city))]
@@ -358,6 +450,11 @@ def handle_ask_service_city_confirmation(session, message, sender_phone):
     if answer == "YES":
         session["service_city_confirmed"] = "TRUE"
         session["extracted_service_location"] = session.get("destination_location", "Delhi") or "Delhi"
+        if session.get("service_city_question_mode") == "TODAY":
+            session["service_date"] = datetime.now().date().isoformat()
+            session["current_state"] = "ASK_SERVICE_TIME_WINDOW"
+            return session, [_msg(sender_phone, render("ASK_SERVICE_TIME_WINDOW"))]
+
         session["current_state"] = "ASK_SERVICE_DATE"
         session["service_date_step"] = 0
         prompt_text, implied_date = get_service_date_prompt_and_date()
@@ -458,17 +555,7 @@ def handle_driver_contact_confirmation(session, message, sender_phone):
         session["driver_contact_confirmed"] = "TRUE"
         session["contact_person"] = session.get("driver_name", "Driver")
         session["contact_number"] = session.get("driver_phone", "NOT_PROVIDED")
-        session["current_state"] = "CONFIRM_SUMMARY"
-        text = render(
-            "BOOKING_SUMMARY",
-            current_location=session.get("current_location", ""),
-            service_location=session.get("extracted_service_location", ""),
-            service_date=session.get("service_date", ""),
-            service_time=session.get("service_time_window", session.get("service_time", "")),
-            contact_person=session.get("contact_person", ""),
-            contact_number=session.get("contact_number", ""),
-        )
-        return session, [_msg(sender_phone, text)]
+        return _create_and_confirm_ticket_directly(session, sender_phone)
 
     if answer == "NO":
         session["driver_contact_confirmed"] = "FALSE"
@@ -500,34 +587,14 @@ def handle_ask_alternate_contact(session, message, sender_phone):
     if says_not_provided and not has_phone_number:
         session["contact_person"] = "NOT_PROVIDED"
         session["contact_number"] = "NOT_PROVIDED"
-        session["current_state"] = "CONFIRM_SUMMARY"
-        text = render(
-            "BOOKING_SUMMARY",
-            current_location=session.get("current_location", ""),
-            service_location=session.get("extracted_service_location", ""),
-            service_date=session.get("service_date", ""),
-            service_time=session.get("service_time_window", session.get("service_time", "")),
-            contact_person=session.get("contact_person", "NOT_PROVIDED"),
-            contact_number=session.get("contact_number", "NOT_PROVIDED"),
-        )
-        return session, [_msg(sender_phone, text)]
+        return _create_and_confirm_ticket_directly(session, sender_phone)
 
     extracted = llm.extract_name_and_phone(session["current_state"], message)
     phone_match = PHONE_RE.search(extracted.get("phone", "") or message)
     if phone_match:
         session["contact_number"] = phone_match.group(1)
         session["contact_person"] = extracted.get("name") or message
-        session["current_state"] = "CONFIRM_SUMMARY"
-        text = render(
-            "BOOKING_SUMMARY",
-            current_location=session.get("current_location", ""),
-            service_location=session.get("extracted_service_location", ""),
-            service_date=session.get("service_date", ""),
-            service_time=session.get("service_time_window", session.get("service_time", "")),
-            contact_person=session.get("contact_person", ""),
-            contact_number=session.get("contact_number", ""),
-        )
-        return session, [_msg(sender_phone, text)]
+        return _create_and_confirm_ticket_directly(session, sender_phone)
 
     return session, [_msg(sender_phone, render("INVALID_NUMBER") + "\n" + render("ASK_ALTERNATE_CONTACT"))]
 
@@ -596,17 +663,7 @@ def handle_ask_booking_correction(session, message, sender_phone):
         session["current_state"] = "ASK_BOOKING_CORRECTION"
         return session, [_msg(sender_phone, "Koi sahi detail nahi mili. Kripya sirf woh detail bhejein jo aap update karna chahte hain, jaise 'Service city Delhi' ya 'Time 5 baje'.")]
 
-    session["current_state"] = "CONFIRM_SUMMARY"
-    text = render(
-        "BOOKING_SUMMARY",
-        current_location=session["current_location"],
-        service_location=session.get("extracted_service_location", ""),
-        service_date=session.get("service_date", ""),
-        service_time=session.get("service_time_window", session.get("service_time", "")),
-        contact_person=session.get("contact_person", ""),
-        contact_number=session.get("contact_number", ""),
-    )
-    return session, [_msg(sender_phone, text)]
+    return _create_and_confirm_ticket_directly(session, sender_phone)
 
 
 def handle_ask_contact_number(session, message, sender_phone):
@@ -615,17 +672,7 @@ def handle_ask_contact_number(session, message, sender_phone):
         return session, [_msg(sender_phone, render("INVALID_NUMBER"))]
 
     session["contact_number"] = match.group(1)
-    session["current_state"] = "CONFIRM_SUMMARY"
-    text = render(
-        "BOOKING_SUMMARY",
-        current_location=session["current_location"],
-        service_location=session.get("extracted_service_location", ""),
-        service_date=session.get("service_date", ""),
-        service_time=session.get("service_time_window", session.get("service_time", "")),
-        contact_person=session.get("contact_person", ""),
-        contact_number=session.get("contact_number", ""),
-    )
-    return session, [_msg(sender_phone, text)]
+    return _create_and_confirm_ticket_directly(session, sender_phone)
 
 
 def handle_confirm_summary(session, message, sender_phone):
@@ -674,6 +721,7 @@ HANDLERS = {
     "ASK_PHYSICAL_DAMAGE": handle_ask_physical_damage,
     "ASK_VEHICLE_STATUS": handle_ask_vehicle_status,
     "ASK_EXPECTED_DATE": handle_ask_expected_date,
+    "ASK_GPS_REPAIR_CONFIRMATION": handle_ask_gps_repair_confirmation,
     "ASK_CURRENT_LOCATION": handle_ask_current_location,
     "ASK_DESTINATION_LOCATION": handle_ask_destination_location,
     "ASK_SERVICE_CITY_CONFIRMATION": handle_ask_service_city_confirmation,

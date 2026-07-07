@@ -27,7 +27,7 @@ COLUMNS = [
     "main_powervoltage", "ismainpoerconnected", "gpsStatus",
     "driver_name", "driver_phone", "current_location", "destination_location",
     "vehicle_state", "current_state", "handler", "extracted_appointment_date",
-    "extracted_service_location", "service_city_confirmed", "service_date_step",
+    "extracted_service_location", "service_city_confirmed", "service_city_question_mode", "service_date_step",
     "service_date", "service_time", "service_time_window",
     "driver_contact_confirmed", "awaiting_alternate_contact",
     "root_cause", "physical_damage", "contact_person",

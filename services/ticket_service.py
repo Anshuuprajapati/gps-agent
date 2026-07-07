@@ -28,7 +28,7 @@ def _ensure_file():
 def create_ticket(session: dict) -> dict:
     _ensure_file()
 
-    engineer = assign_engineer(session.get("extracted_service_location", ""))
+    engineer = assign_engineer(session.get("extracted_service_location", "")) if session.get("vehicle_state") != "GPS_DAMAGED" else {"engineer_id": "", "engineer_name": "", "engineer_phone": ""}
 
     ticket = {
         "ticket_id": "TKT-" + uuid.uuid4().hex[:8].upper(),

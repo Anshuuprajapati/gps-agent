@@ -30,6 +30,7 @@ import os
 import sys
 import csv
 import importlib
+from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
@@ -211,14 +212,15 @@ class TestMainPowerDisconnected:
 class TestVehicleStatusScenarios:
     @pytest.mark.parametrize("llm_value,expected_state,expected_template_key", [
         ("WORKSHOP", "ASK_EXPECTED_DATE", "ASK_EXPECTED_DATE_WORKSHOP"),
-        ("ACCIDENT", "ASK_EXPECTED_DATE", "ASK_EXPECTED_DATE_ACCIDENT"),
-        ("GPS_REMOVED", "ASK_CURRENT_LOCATION", "ASK_CURRENT_LOCATION"),
-        ("GPS_DAMAGED", "ASK_CURRENT_LOCATION", "ASK_CURRENT_LOCATION"),
-        ("RUNNING", "ASK_CURRENT_LOCATION", "ASK_CURRENT_LOCATION"),
+        ("ACCIDENT", "ASK_CURRENT_LOCATION", "ASK_CURRENT_LOCATION"),
+        ("GPS_REMOVED", "ASK_DESTINATION_LOCATION", "ASK_DESTINATION_LOCATION"),
+        ("GPS_DAMAGED", "ASK_GPS_REPAIR_CONFIRMATION", "ASK_GPS_REPAIR_CONFIRMATION"),
+        ("RUNNING", "ASK_DESTINATION_LOCATION", "ASK_DESTINATION_LOCATION"),
     ])
     def test_vehicle_status_routes_correctly(self, monkeypatch, llm_value, expected_state, expected_template_key):
         monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value=llm_value))
         monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value=""))  # no date given in this message
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={}))  # empty extraction for bulk
         session = base_session(current_state="ASK_VEHICLE_STATUS")
 
         session, outbound = sm.handle_ask_vehicle_status(session, "some free text reply", "919999900001")
@@ -226,7 +228,13 @@ class TestVehicleStatusScenarios:
         assert session["vehicle_state"] == llm_value
         assert session["current_state"] == expected_state
         from prompts.templates import render
-        assert outbound[0]["text"] == render(expected_template_key) if expected_template_key != "ASK_CURRENT_LOCATION" or True else True
+        # Handle both text and button messages
+        msg = outbound[0]
+        expected_text = render(expected_template_key)
+        if "text" in msg:  # text message
+            assert msg["text"] == expected_text
+        elif "interactive" in msg:  # button message
+            assert expected_text in msg["interactive"]["body"]["text"]
 
     def test_vehicle_status_unclear_falls_back_and_stays_in_state(self, monkeypatch):
         monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="UNCLEAR"))
@@ -445,7 +453,7 @@ class TestComplaintTicketCreation:
 class TestServiceBookingEndToEnd:
     def test_full_booking_flow_produces_ticket(self, tmp_csv_backend, monkeypatch):
         phone = "919999900001"
-        session = base_session(current_state="ASK_CURRENT_LOCATION", root_cause=gps_service.BATTERY_ISSUE)
+        session = base_session(current_state="ASK_CURRENT_LOCATION", vehicle_state="RUNNING")
 
         monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(side_effect=[
             "Mumbai Highway",   # current location
@@ -462,13 +470,9 @@ class TestServiceBookingEndToEnd:
 
         monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
         session, outbound = sm.handle_ask_service_city_confirmation(session, "haan Pune theek hai", phone)
-        assert session["current_state"] == "ASK_SERVICE_DATE"
+        assert session["current_state"] == "ASK_SERVICE_TIME_WINDOW"  # Skips date question because service_city_question_mode is "TODAY"
         assert session["extracted_service_location"] == "Pune"
-
-        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value="2026-07-05"))
-        session, outbound = sm.handle_ask_service_date(session, "5 July", phone)
-        assert session["current_state"] == "ASK_SERVICE_TIME_WINDOW"
-        assert session["service_date"] == "2026-07-05"
+        assert session["service_date"] == date.today().isoformat()
 
         monkeypatch.setattr(sm.llm, "extract_time", MagicMock(return_value="05:00 PM"))
         session, outbound = sm.handle_ask_service_time_window(session, "5 baje", phone)
@@ -480,14 +484,90 @@ class TestServiceBookingEndToEnd:
         assert session["contact_person"] == "Raju"
 
         session, outbound = sm.handle_ask_contact_number(session, "9876500000", phone)
-        assert session["current_state"] == "CONFIRM_SUMMARY"
-        assert session["contact_number"] == "9876500000"
-        assert "Pune" in outbound[0]["text"]  # booking summary shows service city
-
-        session, outbound = sm.handle_confirm_summary(session, "haan sahi hai", phone)
         assert session["current_state"] == "COMPLETED"
+        assert session["contact_number"] == "9876500000"
+        assert len(outbound) == 2  # summary + ticket confirmation
+        assert "Pune" in outbound[0]["text"]  # booking summary shows service city
         assert session["ticket_id"].startswith("TKT-")
         assert session["engineer_id"] == "ENG001"  # Pune zone
+
+    def test_destination_today_booking_prompt_goes_directly_to_time_window(self, monkeypatch):
+        phone = "919999900001"
+        session = base_session(current_state="ASK_DESTINATION_LOCATION", current_location="Nagpur")
+
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Preet vihar"))
+        session, outbound = sm.handle_ask_destination_location(session, "Preet vihar", phone)
+
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+        assert "aaj ke liye service book kar dein" in outbound[0]["text"].lower()
+
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
+        session, outbound = sm.handle_ask_service_city_confirmation(session, "haan", phone)
+
+        assert session["current_state"] == "ASK_SERVICE_TIME_WINDOW"
+        assert session["service_date"] == date.today().isoformat()
+
+    def test_broken_vehicle_asks_gps_problem_type(self, monkeypatch):
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="GPS_DAMAGED"))
+
+        session, outbound = sm.handle_ask_vehicle_status(session, "GPS toot gaya hai", "919999900001")
+
+        assert session["current_state"] == "ASK_GPS_REPAIR_CONFIRMATION"
+        assert "Kya GPS repair ya replace karwana hai?" in outbound[0]["interactive"]["body"]["text"]
+        assert outbound[0]["interactive"]["type"] == "button"
+
+    def test_generic_vehicle_issue_asks_gps_or_vehicle_clarification(self):
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.handle_ask_vehicle_status(session, "gadi khrab h", "919999900001")
+
+        assert session["current_state"] == "ASK_VEHICLE_STATUS"
+        assert "Kya GPS kharab hai ya vehicle ka problem hai?" in outbound[0]["interactive"]["body"]["text"]
+        assert outbound[0]["interactive"]["type"] == "button"
+
+    def test_gps_problem_type_yes_sets_gps_damaged(self, monkeypatch):
+        session = base_session(current_state="ASK_GPS_REPAIR_CONFIRMATION")
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
+
+        session, outbound = sm.handle_ask_gps_repair_confirmation(session, "haan", "919999900001")
+
+        assert session["current_state"] == "ASK_CURRENT_LOCATION"
+        assert "Vehicle abhi kis location par hai?" in outbound[0]["text"]
+
+    def test_gps_damaged_full_flow_skips_redundant_date_question(self, monkeypatch):
+        """End-to-end GPS damage flow: confirm GPS repair -> location -> confirm location -> skip date -> ask time"""
+        phone = "919999900001"
+        
+        # Step 1: Vehicle status shows GPS_DAMAGED
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="GPS_DAMAGED"))
+        session, outbound = sm.handle_ask_vehicle_status(session, "GPS toot gaya hai", phone)
+        assert session["current_state"] == "ASK_GPS_REPAIR_CONFIRMATION"
+        assert session["vehicle_state"] == "GPS_DAMAGED"
+        
+        # Step 2: Confirm GPS repair
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
+        session, outbound = sm.handle_ask_gps_repair_confirmation(session, "Haan", phone)
+        assert session["current_state"] == "ASK_CURRENT_LOCATION"
+        assert session["vehicle_state"] == "GPS_DAMAGED"  # Preserved
+        
+        # Step 3: Provide location
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Delhi"))
+        session, outbound = sm.handle_ask_current_location(session, "delhi", phone)
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+        assert session["current_location"] == "Delhi"
+        assert session["destination_location"] == "Delhi"
+        assert session.get("service_city_question_mode") == "TODAY"
+        assert "Delhi" in outbound[0]["text"]
+        assert "aaj" in outbound[0]["text"]
+        
+        # Step 4: Confirm location - MUST SKIP DATE QUESTION and go directly to time
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
+        session, outbound = sm.handle_ask_service_city_confirmation(session, "haa", phone)
+        assert session["current_state"] == "ASK_SERVICE_TIME_WINDOW", f"Expected ASK_SERVICE_TIME_WINDOW but got {session['current_state']}"
+        assert "Kis time" in outbound[0]["text"] or "time" in outbound[0]["text"].lower()
+        assert "aaj" not in outbound[0]["text"]  # Should NOT ask for date confirmation again
 
     def test_invalid_contact_number_is_rejected(self):
         session = base_session(current_state="ASK_CONTACT_NUMBER")
@@ -816,7 +896,7 @@ class TestBugFixRegressions:
         )
 
         assert session["extracted_service_location"] == "Pune"
-        assert session["current_state"] == "CONFIRM_SUMMARY"
+        assert session["current_state"] == "COMPLETED"
 
     def test_service_date_yes_uses_the_date_actually_shown_to_customer(self, monkeypatch):
         """Bug: the 'yes' branch re-derived aaj-vs-kal from datetime.now()
@@ -974,7 +1054,7 @@ class TestBulkBookingExtraction:
         monkeypatch.setattr(sm.llm, "extract_booking_slots", bulk_mock)
         monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Nagpur"))
 
-        session = base_session(current_state="ASK_CURRENT_LOCATION")
+        session = base_session(current_state="ASK_CURRENT_LOCATION", vehicle_state="RUNNING")
         session, outbound = sm.process_message(session, "Nagpur", "919999900001")
 
         assert session["current_state"] == "ASK_DESTINATION_LOCATION"
@@ -994,7 +1074,7 @@ class TestBulkBookingExtraction:
             "contact_number": "",
         }))
         monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Nagpur Bypass, right next to the old fort area"))
-        session = base_session(current_state="ASK_CURRENT_LOCATION")
+        session = base_session(current_state="ASK_CURRENT_LOCATION", vehicle_state="RUNNING")
 
         session, outbound = sm.process_message(
             session, "Nagpur Bypass ke paas hai, wahi purane fort ke area mein", "919999900001"
@@ -1089,6 +1169,101 @@ class TestBulkBookingExtraction:
 
         assert session["destination_location"] == "Pune"
         assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+
+
+# =============================== 22. DIRECT BOOKING (NO CONFIRMATION) =====
+
+class TestDirectBooking:
+    """
+    Verify that booking is created directly without confirmation step.
+    Once all details are provided, ticket is immediately created and
+    session state becomes COMPLETED.
+    """
+    def test_direct_ticket_creation_after_contact_number(self, monkeypatch, tmp_csv_backend):
+        """When contact number is provided, ticket is created immediately."""
+        monkeypatch.setattr(ticket_service, "create_ticket", MagicMock(return_value={
+            "ticket_id": "TICKET_123",
+            "engineer_id": "ENG_001",
+            "engineer_name": "Ramesh",
+            "engineer_phone": "919876543210",
+        }))
+        
+        session = base_session(
+            current_state="ASK_CONTACT_NUMBER",
+            current_location="Nagpur",
+            extracted_service_location="Nagpur",
+            service_date="2026-07-10",
+            service_time_window="10:00 AM",
+            contact_person="Driver"
+        )
+        
+        session, outbound = sm.handle_ask_contact_number(session, "9123456789", "919999900001")
+        
+        # Should NOT ask for confirmation; should show summary + ticket directly
+        assert session["current_state"] == "COMPLETED"
+        assert session["contact_number"] == "9123456789"
+        assert session["ticket_id"] == "TICKET_123"
+        assert len(outbound) == 2  # Summary + Ticket confirmation messages
+        assert "Nagpur" in outbound[0]["text"]  # Summary has location
+        assert "TICKET_123" in outbound[1]["text"]  # Ticket message
+
+    def test_direct_booking_from_driver_contact_confirmation_yes(self, monkeypatch, tmp_csv_backend):
+        """When driver confirms contact is correct, ticket is created immediately."""
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
+        monkeypatch.setattr(ticket_service, "create_ticket", MagicMock(return_value={
+            "ticket_id": "TICKET_456",
+            "engineer_id": "ENG_002",
+            "engineer_name": "Suresh",
+            "engineer_phone": "919987654321",
+        }))
+        
+        session = base_session(
+            current_state="DRIVER_CONTACT_CONFIRMATION",
+            driver_name="Deepak",
+            driver_phone="9123456789",
+            current_location="Pune",
+            extracted_service_location="Pune",
+            service_date="2026-07-11",
+            service_time_window="02:00 PM",
+        )
+        
+        session, outbound = sm.handle_driver_contact_confirmation(
+            session, "Haan driver ka number sahi hai", "919999900001"
+        )
+        
+        assert session["current_state"] == "COMPLETED"
+        assert session["contact_number"] == "9123456789"  # Normalized with 91
+        assert session["ticket_id"] == "TICKET_456"
+        assert len(outbound) == 2
+
+    def test_booking_correction_then_direct_creation(self, monkeypatch, tmp_csv_backend):
+        """When correction is provided and validated, ticket is created directly."""
+        monkeypatch.setattr(sm.llm, "extract_structured", MagicMock(return_value={
+            "extracted_service_location": "Nagpur",
+            "contact_person": "Manager",
+            "contact_number": "9876543210",
+        }))
+        monkeypatch.setattr(ticket_service, "create_ticket", MagicMock(return_value={
+            "ticket_id": "TICKET_789",
+            "engineer_id": "ENG_003",
+            "engineer_name": "Ravi",
+            "engineer_phone": "919876543200",
+        }))
+        
+        session = base_session(
+            current_state="ASK_BOOKING_CORRECTION",
+            current_location="Nagpur",
+            service_date="2026-07-12",
+            service_time_window="03:00 PM",
+        )
+        
+        session, outbound = sm.handle_ask_booking_correction(
+            session, "Service city Nagpur, contact Manager 9876543210", "919999900001"
+        )
+        
+        assert session["current_state"] == "COMPLETED"
+        assert session["ticket_id"] == "TICKET_789"
+        assert len(outbound) == 2
 
 
 if __name__ == "__main__":
