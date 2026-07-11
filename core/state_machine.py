@@ -80,7 +80,7 @@ def _looks_like_gps_damage(message: str) -> bool:
 
 def _looks_like_vehicle_issue(message: str) -> bool:
     text = message.lower()
-    has_vehicle_terms = bool(re.search(r"\b(gadi|vehicle|car|truck|bus)\b", text))
+    has_vehicle_terms = bool(re.search(r"\b(gaadi|gadi|vehicle|car|truck|bus)\b", text))
     has_problem_terms = bool(re.search(r"\b(kharab|khrab|kharaab|toot|broken|problem|repair|replace|damage|damaged|fault)\b", text))
     has_gps_terms = bool(re.search(r"\b(gps|tracker|telematics|device|antenna)\b", text))
     return has_vehicle_terms and has_problem_terms and not has_gps_terms
@@ -357,7 +357,8 @@ def handle_ask_vehicle_status(session, message, sender_phone):
 
     if status == "WORKSHOP":
         # Try to extract date from the message to skip ASK_EXPECTED_DATE if available
-        date_value = llm.extract_date(session["current_state"], message)
+        extract_date = getattr(llm, "extract_date", None)
+        date_value = extract_date(session["current_state"], message) if extract_date else ""
         if date_value:
             session["extracted_appointment_date"] = date_value
             session["current_state"] = "COMPLETED"

@@ -71,7 +71,7 @@ T = {
         "Samajh gaya. Ek baat aur bata dein — vehicle abhi kis condition mein hai?"
     ),
     "ASK_GPS_OR_VEHICLE": (
-        "Kya GPS kharab hai ya vehicle ka problem hai? Agar vehicle hai toh bata dein kab tak thik ho jayegi."
+        "Kya GPS kharab/tuta hai ya vehicle mein koi aur problem hai?"
     ),
     "VEHICLE_STATUS_OPTIONS": (
         "Vehicle status options:\n"
@@ -112,7 +112,6 @@ T = {
         "🕒 Time: {service_time}\n"
         "👤 Driver: {contact_person}\n"
         "📞 {contact_number}\n\n"
-        "Kya ye details sahi hain?"
     ),
     "BOOKING_CORRECTION": (
         "Thik hai, aapke current booking details yeh hain:\n"

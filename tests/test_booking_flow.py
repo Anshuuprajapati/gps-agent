@@ -90,6 +90,17 @@ def test_running_status_asks_destination_location(monkeypatch):
     assert outbound[0]["text"].strip() == "Vehicle kis jagah jaa rahi hai?"
 
 
+def test_broken_vehicle_asks_gps_or_vehicle_clarification(monkeypatch):
+    session = {"current_state": "ASK_VEHICLE_STATUS", "vehicle_no": "MH16EF9012"}
+
+    import core.state_machine as state_machine
+
+    updated_session, outbound = handle_ask_vehicle_status(session, "gaadi kharab hai", "9999999999")
+
+    assert updated_session["current_state"] == "ASK_VEHICLE_STATUS"
+    assert "Kya GPS kharab/tuta hai ya vehicle mein koi aur problem hai?" in outbound[0]["interactive"]["body"]["text"]
+
+
 def test_start_unknown_root_cause_does_not_show_vehicle_status_options(monkeypatch):
     session = {"vehicle_no": "MH16EF9012", "last_location": "Delhi", "gpstime": "2026-07-05 10:00"}
 
