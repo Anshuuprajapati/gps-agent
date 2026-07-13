@@ -88,7 +88,10 @@ def _looks_like_vehicle_issue(message: str) -> bool:
 
 def _is_driver_request(message: str) -> bool:
     text = message.strip().lower()
-    return bool(re.search(r"\b(driver se baat karo|driver se|driver ko|driver ka|driver pe|driver\b|driver\s*baat)\b", text))
+    return bool(re.search(
+        r"\b(driver\s+se\s+baat\s+karao|driver\s+se\s+baat|driver\s+se\s+contact|driver\s+ko\s+bulao|driver\s+ko\s+bhejo|driver\s+ko\s+bhej|driver\s+ko\s+call|driver\s+ko\s+phone|driver\s+se)\b",
+        text,
+    ))
 
 
 def get_service_date_prompt() -> str:
@@ -931,7 +934,11 @@ def process_message(session: dict, message: str, sender_phone: str):
     """
     state = session.get("current_state") or "START"
 
-    if session.get("handler", "OWNER") == "OWNER" and state not in ("DRIVER_CONFIRM", "ASK_NEW_DRIVER", "ASK_HANDLER") and _is_driver_request(message):
+    if (
+        session.get("handler", "OWNER") == "OWNER"
+        and state not in ("COMPLETED", "DRIVER_CONFIRM", "ASK_NEW_DRIVER", "ASK_HANDLER")
+        and _is_driver_request(message)
+    ):
         return _start_driver_handoff(session, sender_phone)
 
     is_payload = bool(_normalize_payload(message))
