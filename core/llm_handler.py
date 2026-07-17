@@ -16,7 +16,7 @@ Supports providers, switchable via .env LLM_PROVIDER:
 import json
 import re
 import requests
-from datetime import date
+from datetime import date, datetime, timedelta
 from config import settings
 
 SYSTEM_PROMPT = (
@@ -303,6 +303,118 @@ def extract_booking_slots(user_message: str, conversation_context: str = "") -> 
     }
 
 
+def _normalize_tech_time_window(value: str) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+
+    # Handle simple forms like "11 am", "11am", "11:30 pm", "5 baje"
+    time_match = re.search(r"(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?", text)
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2) or 0)
+        suffix = (time_match.group(3) or "").upper()
+        if suffix == "AM" and hour == 12:
+            hour = 0
+        elif suffix == "PM" and hour < 12:
+            hour += 12
+
+        if suffix in {"AM", "PM"}:
+            display_hour = hour % 12 or 12
+            return f"{display_hour:02d}:{minute:02d} {suffix}"
+        return f"{hour:02d}:{minute:02d}"
+
+    if re.search(r"\b(\d{1,2})\s*baje?\b", text):
+        return text
+    return ""
+
+
+def _normalize_tech_date(value: str) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+
+    today = date.today()
+    if any(word in text for word in ["tomorrow", "kal", "parso"]):
+        return (today + timedelta(days=1)).isoformat()
+    if any(word in text for word in ["today", "aaj"]):
+        return today.isoformat()
+    if "day after tomorrow" in text or "parso ke baad" in text:
+        return (today + timedelta(days=2)).isoformat()
+    return ""
+
+
+def _heuristic_extract_tech_dispatch_slots(user_message: str) -> dict:
+    text = re.sub(r"\s+", " ", (user_message or "")).strip()
+    if not text:
+        return {"service_location": "", "service_date": "", "service_time_window": "", "contact_person": "", "contact_number": ""}
+
+    lowered = text.lower()
+    location_candidate = text
+    for marker in [" at ", " on ", " for ", " to "]:
+        if marker in lowered:
+            location_candidate = text.split(marker, 1)[1]
+            break
+
+    time_match = re.search(r"\b(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?\b", location_candidate, re.I)
+    if time_match:
+        location_candidate = location_candidate[:time_match.start()].strip()
+
+    location_candidate = re.sub(r"^(send|tech|technician|engineer|please|plz|kindly)\b", "", location_candidate, flags=re.I)
+    location_candidate = re.sub(r"^(by|at|on|for|to)\b", "", location_candidate, flags=re.I)
+    location_candidate = location_candidate.strip(" ,;:-")
+
+    service_location = location_candidate if len(location_candidate) > 1 else ""
+
+    service_date = _normalize_tech_date(text)
+    service_time_window = _normalize_tech_time_window(text)
+
+    contact_number = ""
+    phone_match = re.search(r"(\d{10,13})", text)
+    if phone_match:
+        contact_number = phone_match.group(1)
+
+    contact_person = ""
+    name_match = re.search(r"\b(contact|person|name)\s+([A-Za-z][A-Za-z .'-]{1,30})", text, re.I)
+    if name_match:
+        contact_person = name_match.group(2).strip()
+
+    return {
+        "service_location": service_location,
+        "service_date": service_date,
+        "service_time_window": service_time_window,
+        "contact_person": contact_person,
+        "contact_number": contact_number,
+    }
+
+
+def extract_tech_dispatch_slots(user_message: str, conversation_context: str = "") -> dict:
+    result = extract_structured(
+        "DIRECT_TECH_REQUEST",
+        "The user wants a technician, engineer, or tech sent directly. "
+        "Extract whichever of these are actually present in USER_MESSAGE: "
+        "service location where the technician should go, preferred service "
+        "date, preferred service time window, contact person's name, and/or "
+        "contact phone number. If a location is mentioned, treat it as the "
+        "service location. Leave anything not mentioned as an empty string. "
+        "Do not guess. Return JSON with exactly these keys: "
+        '{"service_location": "", "service_date": "", '
+        '"service_time_window": "", "contact_person": "", '
+        '"contact_number": ""}',
+        user_message,
+        conversation_context,
+    )
+    fallback = _heuristic_extract_tech_dispatch_slots(user_message)
+
+    return {
+        "service_location": (result.get("service_location") or "").strip() or fallback.get("service_location", "").strip(),
+        "service_date": (result.get("service_date") or "").strip() or fallback.get("service_date", "").strip(),
+        "service_time_window": (result.get("service_time_window") or "").strip() or fallback.get("service_time_window", "").strip(),
+        "contact_person": (result.get("contact_person") or "").strip() or fallback.get("contact_person", "").strip(),
+        "contact_number": (result.get("contact_number") or "").strip() or fallback.get("contact_number", "").strip(),
+    }
+
+
 # --------------------------------------------------------- knowledge base --
 
 def is_general_question(current_state: str, user_message: str, conversation_context: str = "") -> str:
@@ -330,6 +442,25 @@ def is_general_question(current_state: str, user_message: str, conversation_cont
         conversation_context,
     )
     return result.get("value", "FLOW_REPLY").upper()
+
+
+def is_driver_update_intent(user_message: str, conversation_context: str = "") -> bool:
+    """
+    Uses LLM to detect if the user is trying to update/change driver information.
+    Handles patterns like 'driver ye hai', 'new driver', 'driver badal', etc.
+    """
+    result = extract_structured(
+        "DRIVER_UPDATE_CHECK",
+        "Is the user providing or updating driver information? "
+        "Look for patterns like: 'driver ye hai', 'new driver name/number', "
+        "'driver badal', 'ye rahe driver details', 'driver change', "
+        "or simply providing a name followed by a phone number in context "
+        "of updating the driver. Return {\"value\": \"YES\"} if this is a "
+        "driver update/new driver info, {\"value\": \"NO\"} otherwise.",
+        user_message,
+        conversation_context,
+    )
+    return result.get("value", "").upper() == "YES"
 
 
 _NO_ANSWER_FALLBACK = "Iska jawab abhi available nahi hai, hum team se check karke aapko batayenge."

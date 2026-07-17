@@ -1,6 +1,8 @@
 phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,conversation_summary,pending_quick_date,service_city_question_mode
-918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,,WORKSHOP,ASK_EXPECTED_DATE,OWNER,2026-07-15,,UNKNOWN,,,,,,,,,,,,,,"Date samajh nahi aayi, kripya dobara bhejein.","BOT: Vehicle status options: 1) Workshop me 2) Accident hua hai 3) Vehicle chal rahi hai
-USER: PAYLOAD_WORKSHOP
-BOT: Vehicle kab tak running mein aa jayegi?
-USER: PAYLOAD_ACCIDENT
-BOT: Date samajh nahi aayi, kripya dobara bhejein.",,
+918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,asdfghjkl,911234567890,Nagpur,,ASK_VEHICLE_STATUS,OWNER,,punjabi Bagh,UNKNOWN,,Sarvesh Swami,8290323758,2026-07-18,,TKT-13ED6641,ENG005,,,,11:00 AM,,,"GPS data abhi receive nahi ho raha hai.
+
+Vehicle abhi kis condition mein hai?","USER: driver ye hai 👤 Driver: asdfghjkl 1234567890
+BOT: Driver details: 👤 asdfghjkl 📞 911234567890
+USER: okay
+BOT: GPS data abhi receive nahi ho raha hai. Vehicle abhi kis condition mein hai?
+BOT: Vehicle status options: 1) Workshop me 2) Accident hua hai 3) Vehicle chal rahi hai",,

@@ -260,6 +260,287 @@ def test_existing_ticket_is_reused_instead_of_creating_a_new_one(monkeypatch, tm
     assert saved.iloc[0]["ticket_id"] == "TKT-EXIST01"
 
 
+def test_extract_tech_dispatch_slots_falls_back_for_punjabi_bagh_time(monkeypatch):
+    import core.llm_handler as llm_handler
+
+    monkeypatch.setattr(llm_handler, "_call_llm", lambda *_args, **_kwargs: "{}")
+
+    slots = llm_handler.extract_tech_dispatch_slots("Send tech by tomorrow at Punjabi Bagh 11 am")
+
+    assert slots["service_location"] == "Punjabi Bagh"
+    assert slots["service_date"] == (date.today() + timedelta(days=1)).isoformat()
+    assert slots["service_time_window"] == "11:00 AM"
+
+
+def test_driver_reply_completes_direct_tech_flow_without_extra_phone_prompt(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "ASK_CONTACT_PERSON",
+        "vehicle_no": "MH16EF9012",
+        "driver_name": "Sarvesh Swami",
+        "driver_phone": "8290323758",
+        "extracted_service_location": "Punjabi Bagh",
+        "service_date": "2026-07-18",
+        "service_time_window": "11:00 AM",
+    }
+
+    monkeypatch.setattr(
+        state_machine.ticket_service,
+        "create_ticket",
+        lambda session: {
+            "ticket_id": "TKT-DRIVER1",
+            "engineer_id": "ENG-1",
+            "engineer_name": "Engineer One",
+            "engineer_phone": "919900000000",
+            "existing_ticket": False,
+        },
+    )
+
+    updated_session, outbound = state_machine.handle_ask_contact_person(session, "driver se", "9999999999")
+
+    assert updated_session["current_state"] == "COMPLETED"
+    assert updated_session["contact_person"] == "Driver (Sarvesh Swami)"
+    assert updated_session["contact_number"] == "8290323758"
+    assert any("TKT-DRIVER1" in (out.get("text") or "") for out in outbound)
+
+
+def test_direct_tech_skips_contact_person_prompt_if_driver_exists(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "COMPLETED",
+        "vehicle_no": "MH16EF9012",
+        "driver_name": "Sarvesh Swami",
+        "driver_phone": "8290323758",
+        "last_location": "Nagpur Bypass",
+    }
+
+    monkeypatch.setattr(
+        state_machine.ticket_service,
+        "create_ticket",
+        lambda session: {
+            "ticket_id": "TKT-SKIP-CONTACT",
+            "engineer_id": "ENG-1",
+            "engineer_name": "Engineer One",
+            "engineer_phone": "919900000000",
+            "existing_ticket": False,
+        },
+    )
+
+    updated_session, outbound = state_machine.process_message(session, "Send tech by tomorrow at Punjabi Bagh 11 am", "9999999999")
+
+    assert updated_session["current_state"] == "COMPLETED"
+    assert updated_session["extracted_service_location"] == "Punjabi Bagh"
+    assert updated_session["contact_person"] == "Sarvesh Swami"
+    assert updated_session["contact_number"] == "8290323758"
+    assert any("TKT-SKIP-CONTACT" in (out.get("text") or "") for out in outbound)
+
+
+def test_driver_update_message_extracts_and_applies_new_driver(monkeypatch):
+    import core.state_machine as state_machine
+    from core import llm_handler
+
+    session = {
+        "current_state": "ASK_VEHICLE_STATUS",
+        "vehicle_no": "MH16EF9012",
+        "driver_name": "Old Driver",
+        "driver_phone": "9876543210",
+    }
+
+    monkeypatch.setattr(llm_handler, "is_driver_update_intent", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        llm_handler,
+        "extract_name_and_phone",
+        lambda *_args, **_kwargs: {"name": "New Driver", "phone": "8290323758"}
+    )
+
+    updated_session, outbound = state_machine.process_message(session, "driver ye hai asdfghjkl 1234567890", "9999999999")
+
+    assert updated_session["driver_name"] == "New Driver"
+    assert updated_session["driver_phone"] == "918290323758"
+    assert any("New Driver" in (out.get("text") or "") for out in outbound)
+    assert any("8290323758" in (out.get("text") or "") for out in outbound)
+
+
+def test_driver_change_request_asks_for_new_driver(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "COMPLETED",
+        "vehicle_no": "MH16EF9012",
+        "driver_name": "Sarvesh Swami",
+        "driver_phone": "8290323758",
+    }
+
+    updated_session, outbound = state_machine.process_message(session, "driver change hai", "9999999999")
+
+    assert updated_session["current_state"] == "ASK_NEW_DRIVER"
+    assert "driver" in outbound[0]["text"].lower()
+
+
+def test_process_message_uses_direct_tech_contact_handler_for_driver_reply(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "ASK_CONTACT_PERSON",
+        "handler": "OWNER",
+        "vehicle_no": "MH16EF9012",
+        "driver_name": "Sarvesh Swami",
+        "driver_phone": "8290323758",
+        "extracted_service_location": "Punjabi Bagh",
+        "service_date": "2026-07-18",
+        "service_time_window": "11:00 AM",
+    }
+
+    monkeypatch.setattr(
+        state_machine.ticket_service,
+        "create_ticket",
+        lambda session: {
+            "ticket_id": "TKT-DRIVER2",
+            "engineer_id": "ENG-1",
+            "engineer_name": "Engineer One",
+            "engineer_phone": "919900000000",
+            "existing_ticket": False,
+        },
+    )
+
+    updated_session, outbound = state_machine.process_message(session, "driver se", "9999999999")
+
+    assert updated_session["current_state"] == "COMPLETED"
+    assert updated_session["contact_person"] == "Driver (Sarvesh Swami)"
+    assert updated_session["contact_number"] == "8290323758"
+    assert any("TKT-DRIVER2" in (out.get("text") or "") for out in outbound)
+
+
+def test_direct_send_tech_message_creates_ticket_without_asking_status(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "COMPLETED",
+        "vehicle_no": "MH16EF9012",
+        "last_location": "Nagpur Bypass",
+    }
+
+    monkeypatch.setattr(
+        state_machine.llm,
+        "extract_tech_dispatch_slots",
+        lambda *_args, **_kwargs: {
+            "service_location": "Punjabi Bagh",
+            "service_date": "2026-07-18",
+            "service_time_window": "11:00 AM",
+            "contact_person": "Anshu",
+            "contact_number": "9876500000",
+        },
+    )
+    monkeypatch.setattr(
+        state_machine.ticket_service,
+        "create_ticket",
+        lambda session: {
+            "ticket_id": "TKT-DIRECT1",
+            "engineer_id": "ENG-1",
+            "engineer_name": "Engineer One",
+            "engineer_phone": "919900000000",
+            "existing_ticket": False,
+        },
+    )
+
+    updated_session, outbound = state_machine.process_message(session, "Send tech by tomorrow at Punjabi Bagh 11 am", "9999999999")
+
+    assert updated_session["current_state"] == "COMPLETED"
+    assert updated_session["extracted_service_location"] == "Punjabi Bagh"
+    assert updated_session["service_date"] == "2026-07-18"
+    assert updated_session["service_time_window"] == "11:00 AM"
+    assert updated_session["contact_person"] == "Anshu"
+    assert updated_session["contact_number"] == "9876500000"
+    assert any("TKT-DIRECT1" in (out.get("text") or "") for out in outbound)
+
+
+def test_direct_send_tech_asks_only_missing_contact_person(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "COMPLETED",
+        "vehicle_no": "MH16EF9012",
+        "last_location": "Nagpur Bypass",
+    }
+
+    monkeypatch.setattr(
+        state_machine.llm,
+        "extract_tech_dispatch_slots",
+        lambda *_args, **_kwargs: {
+            "service_location": "Punjabi Bagh",
+            "service_date": "2026-07-18",
+            "service_time_window": "11:00 AM",
+            "contact_person": "",
+            "contact_number": "",
+        },
+    )
+
+    updated_session, outbound = state_machine.process_message(session, "Send tech by tomorrow at Punjabi Bagh 11 am", "9999999999")
+
+    assert updated_session["current_state"] == "ASK_CONTACT_PERSON"
+    assert updated_session["extracted_service_location"] == "Punjabi Bagh"
+    assert updated_session["service_date"] == "2026-07-18"
+    assert updated_session["service_time_window"] == "11:00 AM"
+    assert "contact person" in outbound[0]["text"].lower()
+    assert "vehicle abhi kis condition" not in outbound[0]["text"].lower()
+
+
+def test_direct_send_tech_location_then_yes_advances_without_repeating(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "COMPLETED",
+        "vehicle_no": "MH16EF9012",
+        "last_location": "Nagpur Bypass",
+    }
+
+    monkeypatch.setattr(
+        state_machine.llm,
+        "extract_tech_dispatch_slots",
+        lambda *_args, **_kwargs: {
+            "service_location": "",
+            "service_date": "",
+            "service_time_window": "",
+            "contact_person": "",
+            "contact_number": "",
+        },
+    )
+
+    updated_session, outbound = state_machine.process_message(session, "Send tech by tomorrow at punjabi Bagh 11 am", "9999999999")
+
+    assert updated_session["current_state"] == "ASK_DIRECT_TECH_LOCATION"
+    assert "location" in outbound[0]["text"].lower()
+
+    monkeypatch.setattr(state_machine.llm, "extract_tech_dispatch_slots", lambda *_args, **_kwargs: {
+        "service_location": "Punjabi Bagh",
+        "service_date": "",
+        "service_time_window": "",
+        "contact_person": "",
+        "contact_number": "",
+    })
+
+    updated_session, outbound = state_machine.process_message(updated_session, "Punjabi Bagh", "9999999999")
+
+    assert updated_session["current_state"] == "ASK_SERVICE_DATE"
+    assert "aaj service book" in outbound[0]["text"].lower() or "kal service book" in outbound[0]["text"].lower()
+
+    class DummyLLM:
+        def extract_date(self, *_args, **_kwargs):
+            return ""
+
+        def classify_yes_no(self, *_args, **_kwargs):
+            return "YES"
+
+    monkeypatch.setattr(state_machine, "llm", DummyLLM())
+    updated_session, outbound = state_machine.handle_ask_service_date(updated_session, "haa", "9999999999")
+
+    assert updated_session["service_date"]
+    assert updated_session["current_state"] == "ASK_SERVICE_TIME_WINDOW"
+    assert "time" in outbound[0]["text"].lower()
+
+
 def test_completed_state_reassures_when_gps_is_back_online(monkeypatch):
     import core.state_machine as state_machine
 

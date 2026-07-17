@@ -109,6 +109,7 @@ T = {
     "ASK_ALTERNATE_CONTACT": "Kripya alternate contact person ka naam aur mobile number bhejiye.",
     "ASK_CONTACT_PERSON": "Site par engineer kis contact person se baat kare?",
     "ASK_CONTACT_NUMBER": "Contact person ka mobile number bhej dein.",
+    "ASK_NEW_DRIVER": "Naye driver ka naam aur 10-digit mobile number bhejiye. Jaise: Ramesh 9876543210",
     "INVALID_NUMBER": "Yeh number sahi nahi lag raha. Kripya 10-digit valid mobile number bhej dein.",
 
     "BOOKING_SUMMARY": (

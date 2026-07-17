@@ -106,6 +106,24 @@ def _is_driver_request(message: str) -> bool:
     ))
 
 
+def _is_driver_change_request(message: str) -> bool:
+    text = message.strip().lower()
+    return bool(re.search(
+        r"\b(driver\s+(change|badal|naya|new|alag)|naya\s+driver|change\s+driver|different\s+driver)\b",
+        text,
+    ))
+    
+def _is_direct_tech_request(message: str) -> bool:
+    text = message.strip().lower()
+    return bool(re.search(
+        r"\b(send\s+(tech|technician|engineer)|send\s+engineer|send\s+technician|tech\s+bhejo|technician\s+bhejo|engineer\s+bhejo|front\s+se\s+(tech|technician|engineer)\s+bhejo|front\s+se\s+tech|front\s+se\s+technician|front\s+se\s+engineer)\b",
+        text,
+    ))
+
+def _direct_tech_location_prompt() -> str:
+    return "Technician kis location par bhejna hai?"
+
+
 def get_service_date_prompt() -> str:
     text, _ = get_service_date_prompt_and_date()
     return text
@@ -157,6 +175,123 @@ def _conversation_memory_lines(session: dict) -> list[str]:
         return []
     lines = [line.strip() for line in summary.splitlines() if line.strip()]
     return lines[-_CONVERSATION_MEMORY_LIMIT:]
+    
+def _normalize_ticket_location(session: dict, slots: dict) -> str:
+    return (
+        (session.get("extracted_service_location") or "").strip()
+        or (slots.get("service_location") or "").strip()
+        or (session.get("destination_location") or "").strip()
+        or (session.get("current_location") or "").strip()
+        or (session.get("last_location") or "").strip()
+        or ""
+    )
+
+def _apply_direct_tech_slots(session: dict, slots: dict) -> None:
+    service_location = (slots.get("service_location") or "").strip()
+    if service_location and not session.get("extracted_service_location"):
+        session["extracted_service_location"] = service_location
+
+    if slots.get("service_date") and not session.get("service_date"):
+        session["service_date"] = slots["service_date"]
+
+    if slots.get("service_time_window") and not session.get("service_time_window"):
+        session["service_time_window"] = slots["service_time_window"]
+
+    if slots.get("contact_person") and not session.get("contact_person"):
+        session["contact_person"] = slots["contact_person"]
+
+    phone_match = PHONE_RE.search(slots.get("contact_number") or "")
+    if phone_match and not session.get("contact_number"):
+        session["contact_number"] = phone_match.group(1)
+
+    if not session.get("current_location"):
+        inferred_location = session.get("last_location") or service_location
+        if inferred_location:
+            session["current_location"] = inferred_location
+
+def _next_missing_direct_tech_state(session: dict) -> str:
+    if not session.get("extracted_service_location"):
+        return "ASK_DIRECT_TECH_LOCATION"
+    if not session.get("service_date"):
+        return "ASK_SERVICE_DATE"
+    if not session.get("service_time_window"):
+        return "ASK_SERVICE_TIME_WINDOW"
+    if session.get("driver_name") and session.get("driver_phone"):
+        return ""
+    if not session.get("contact_person"):
+        return "ASK_CONTACT_PERSON"
+    if not session.get("contact_number"):
+        return "ASK_CONTACT_NUMBER"
+    return ""
+
+def _prompt_for_direct_tech_state(session: dict, state: str) -> str:
+    if state == "ASK_DIRECT_TECH_LOCATION":
+        return _direct_tech_location_prompt()
+    if state == "ASK_SERVICE_DATE":
+        prompt_text, implied_date = get_service_date_prompt_and_date()
+        session["pending_quick_date"] = implied_date
+        return prompt_text
+    if state == "ASK_SERVICE_TIME_WINDOW":
+        return render("ASK_SERVICE_TIME_WINDOW")
+    if state == "ASK_CONTACT_PERSON":
+        return render("ASK_CONTACT_PERSON")
+    if state == "ASK_CONTACT_NUMBER":
+        return render("ASK_CONTACT_NUMBER")
+    return render("ASK_CONTACT_PERSON")
+
+def _handle_direct_tech_request(session: dict, message: str, sender_phone: str):
+    conversation_context = build_conversation_context(session)
+    slots = llm.extract_tech_dispatch_slots(message, conversation_context)
+    _apply_direct_tech_slots(session, slots)
+
+    next_state = _next_missing_direct_tech_state(session)
+    if next_state:
+        session["current_state"] = next_state
+        return session, [_msg(sender_phone, _prompt_for_direct_tech_state(session, next_state))]
+
+    if not session.get("current_location"):
+        session["current_location"] = session.get("last_location") or session.get("extracted_service_location") or ""
+
+    if not session.get("contact_person"):
+        session["contact_person"] = session.get("driver_name") or "NOT_PROVIDED"
+    if not session.get("contact_number"):
+        session["contact_number"] = session.get("driver_phone") or "NOT_PROVIDED"
+
+    session["current_state"] = "COMPLETED"
+    ticket = ticket_service.create_ticket(session)
+    outbound = _ticket_confirmation_messages(session, ticket, sender_phone)
+    return session, outbound
+
+
+def _handle_driver_change_request(session: dict, sender_phone: str):
+    """When user says 'driver change hai', ask for new driver details."""
+    session["current_state"] = "ASK_NEW_DRIVER"
+    return session, [_msg(sender_phone, render("ASK_NEW_DRIVER"))]
+
+
+def _handle_driver_update_message(session: dict, message: str, sender_phone: str):
+    """
+    When user provides driver info (via LLM intent detection),
+    extract name+phone and update the session.
+    Then continue with the current flow.
+    """
+    conversation_context = build_conversation_context(session)
+    extracted = llm.extract_name_and_phone(session.get("current_state", "START"), message, conversation_context)
+    phone_match = PHONE_RE.search(extracted.get("phone", "") or message)
+
+    if extracted.get("name") and phone_match:
+        driver_phone = _normalize_indian_phone(phone_match.group(1))
+        session = driver_service.update_driver_details(session, extracted["name"], driver_phone)
+        outbound = [_msg(sender_phone, render("SHOW_DRIVER_DETAILS", driver_name=session["driver_name"], driver_phone=session["driver_phone"]))]
+        
+        current_state = session.get("current_state")
+        if current_state in {"ASK_VEHICLE_STATUS", "ASK_VEHICLE_STATUS_AFTER_CLOSE"}:
+            outbound.append(_msg(sender_phone, render("ASK_VEHICLE_STATUS")))
+            outbound.append(_vehicle_status_options_message(sender_phone))
+        
+        return session, outbound
+    
+    return session, [_msg(sender_phone, "Naam aur 10-digit mobile number dono bhejein, jaise: Ramesh 9876543210")]
 
 
 def build_conversation_context(session: dict) -> str:
@@ -719,10 +854,20 @@ def handle_ask_alternate_contact(session, message, sender_phone):
 
 def handle_ask_contact_person(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
-    value = llm.extract_free_text(session["current_state"], message, "contact person name", conversation_context)
     raw = message.strip().lower()
+    value = llm.extract_free_text(session["current_state"], message, "contact person name", conversation_context)
+
     if "driver" in raw and session.get("driver_name"):
         value = f"Driver ({session['driver_name']})"
+        session["contact_person"] = value
+        session["contact_number"] = session.get("driver_phone") or session.get("contact_number") or "NOT_PROVIDED"
+        return _create_and_confirm_ticket_directly(session, sender_phone)
+
+    if not value and raw in {"driver", "driver se", "driver ko", "driver hi"}:
+        session["contact_person"] = f"Driver ({session.get('driver_name') or 'Driver'})"
+        session["contact_number"] = session.get("driver_phone") or "NOT_PROVIDED"
+        return _create_and_confirm_ticket_directly(session, sender_phone)
+
     session["contact_person"] = value or message
     session["current_state"] = "ASK_CONTACT_NUMBER"
     return session, [_msg(sender_phone, render("ASK_CONTACT_NUMBER"))]
@@ -828,12 +973,16 @@ def handle_completed(session, message, sender_phone):
         _msg(sender_phone, render("ASK_VEHICLE_STATUS_AFTER_CLOSE")),
         _vehicle_status_options_message(sender_phone),
     ]
+    
+def handle_direct_tech_request(session, message, sender_phone):
+    return _handle_direct_tech_request(session, message, sender_phone)
 
 
 # --------------------------------------------------------------- DISPATCH --
 
 HANDLERS = {
     "START": handle_start,
+    "DIRECT_TECH_REQUEST": handle_direct_tech_request,
     "ASK_HANDLER": handle_ask_handler,
     "DRIVER_CONFIRM": handle_driver_confirm,
     "ASK_NEW_DRIVER": handle_ask_new_driver,
@@ -1050,6 +1199,21 @@ def process_message(session: dict, message: str, sender_phone: str):
     Returns (updated_session, outbound_messages).
     """
     state = session.get("current_state") or "START"
+
+    if _is_driver_change_request(message):
+        return _handle_driver_change_request(session, sender_phone)
+
+    if llm.is_driver_update_intent(message, build_conversation_context(session)):
+        return _handle_driver_update_message(session, message, sender_phone)
+
+    if state in {"ASK_DIRECT_TECH_LOCATION", "ASK_SERVICE_DATE", "ASK_SERVICE_TIME_WINDOW", "ASK_CONTACT_PERSON", "ASK_CONTACT_NUMBER"}:
+        if state == "ASK_CONTACT_PERSON" and ("driver" in message.strip().lower() and session.get("driver_name")):
+            return handle_ask_contact_person(session, message, sender_phone)
+        if state in {"ASK_DIRECT_TECH_LOCATION", "ASK_SERVICE_DATE", "ASK_SERVICE_TIME_WINDOW", "ASK_CONTACT_PERSON", "ASK_CONTACT_NUMBER"}:
+            return _handle_direct_tech_request(session, message, sender_phone)
+    
+    if state == "ASK_DIRECT_TECH_LOCATION" or _is_direct_tech_request(message):
+        return _handle_direct_tech_request(session, message, sender_phone)
 
     if (
         session.get("handler", "OWNER") == "OWNER"
