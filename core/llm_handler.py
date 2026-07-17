@@ -32,6 +32,8 @@ _client_cache = {}
 
 
 def _strip_json_fence(text: str) -> str:
+    if text is None:
+        return ""
     text = text.strip()
     text = re.sub(r"^```(json)?", "", text).strip()
     text = re.sub(r"```$", "", text).strip()
@@ -141,6 +143,8 @@ def extract_structured(current_state: str, instruction: str, user_message: str, 
 
     try:
         raw_text = _call_llm(prompt)
+        if raw_text is None:
+            return {"value": "", "confidence": "low"}
         parsed = json.loads(_strip_json_fence(raw_text))
         return parsed
     except Exception as e:

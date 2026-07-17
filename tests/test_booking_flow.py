@@ -337,6 +337,33 @@ def test_direct_tech_skips_contact_person_prompt_if_driver_exists(monkeypatch):
     assert any("TKT-SKIP-CONTACT" in (out.get("text") or "") for out in outbound)
 
 
+def test_vehicle_status_unclear_extracts_destination_and_continues(monkeypatch):
+    import core.state_machine as state_machine
+    from core import llm_handler
+
+    session = {
+        "current_state": "ASK_VEHICLE_STATUS",
+        "vehicle_no": "MH16EF9012",
+    }
+
+    monkeypatch.setattr(
+        llm_handler,
+        "classify_vehicle_status",
+        lambda *_args, **_kwargs: "UNCLEAR"
+    )
+    monkeypatch.setattr(
+        llm_handler,
+        "extract_free_text",
+        lambda *_args, **_kwargs: "Pune"
+    )
+
+    updated_session, outbound = state_machine.handle_ask_vehicle_status(session, "pune jaa rahi hai pta nahi kab aayegi", "9999999999")
+
+    assert updated_session["destination_location"] == "Pune"
+    assert updated_session["vehicle_state"] == "RUNNING"
+    assert updated_session["current_state"] == "ASK_SERVICE_DATE"
+
+
 def test_driver_update_message_extracts_and_applies_new_driver(monkeypatch):
     import core.state_machine as state_machine
     from core import llm_handler

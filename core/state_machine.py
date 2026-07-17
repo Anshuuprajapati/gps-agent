@@ -624,6 +624,19 @@ def handle_ask_vehicle_status(session, message, sender_phone):
         session["current_state"] = "ASK_DESTINATION_LOCATION"
         return session, [_msg(sender_phone, render("ASK_DESTINATION_LOCATION"))]
 
+    if status == "UNCLEAR":
+        destination = llm.extract_free_text(session["current_state"], message, "destination location", conversation_context)
+        if destination:
+            session["destination_location"] = destination
+            session["vehicle_state"] = "RUNNING"
+            fast_result = _handle_booking_bulk_extraction(session, message, sender_phone)
+            if fast_result is not None:
+                return fast_result
+            session["current_state"] = "ASK_SERVICE_DATE"
+            prompt_text, implied_date = get_service_date_prompt_and_date()
+            session["pending_quick_date"] = implied_date
+            return session, [_msg(sender_phone, prompt_text)]
+
     return session, [_msg(sender_phone, render("FALLBACK") + "\n" + render("ASK_VEHICLE_STATUS"))]
 
 
