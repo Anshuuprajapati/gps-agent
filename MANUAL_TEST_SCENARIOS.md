@@ -13,6 +13,10 @@ CSV column order (for reference — paste rows exactly in this order):
 ```
 phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,pending_quick_date
 ```
+The app now also stores a rolling `conversation_summary` field. If you paste a row manually, include that column right after `last_prompt_text`:
+```
+phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,conversation_summary,pending_quick_date
+```
 
 ---
 
@@ -272,6 +276,47 @@ Should update the service city once and move to confirmation — not get confuse
 
 **e) Physical damage button shouldn't waste an LLM call:**
 Harder to observe directly over WhatsApp — this one's covered by the automated test suite (`test.py::TestBugFixRegressions::test_physical_damage_button_payload_never_touches_llm`). Run `pytest test.py -v` to confirm it still passes.
+
+---
+
+## 17. Conversation summary memory across turns
+
+This scenario checks the new rolling conversation memory. It verifies that recent turns are saved, reused on the next message, and still available after restarting the server.
+
+**CSV row:**
+```
+<YOUR_PHONE>,MH12AA0017,Nagpur,2026-07-05 09:00:00,05 July 2026 09:00,12.6,1,0,,,,,ASK_CURRENT_LOCATION,OWNER,,,,,,,,,,,,,,,,,
+```
+
+Make sure the row includes a blank `conversation_summary` column if you are editing the CSV by hand.
+
+**Chat script:**
+| You send | Bot should reply |
+|---|---|
+| `Nagpur bypass ke paas hu` | Asks destination |
+| `Pune jaana hai` | Suggests/asks about service city |
+| `Haan Pune theek hai` | Asks for service date |
+| `Kal subah` | Asks for time |
+
+**What to verify in `data/mock_sessions.csv`:**
+| Column | Expected |
+|---|---|
+| `current_state` | Moves forward through the booking flow |
+| `last_prompt_text` | Matches the latest bot prompt |
+| `conversation_summary` | Contains only the recent turns, not the entire chat |
+
+**Memory check:**
+Send a follow-up message that depends on earlier context, for example:
+```
+same hi rakho
+```
+The bot should continue the same flow using the saved state and summary.
+
+**Restart check:**
+1. Stop the server.
+2. Start it again.
+3. Send another follow-up like `haan wahi` or `same city hi rakho`.
+4. The bot should resume from the saved CSV row, not restart the conversation.
 
 ---
 

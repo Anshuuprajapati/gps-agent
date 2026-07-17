@@ -125,6 +125,8 @@ def _process_incoming_message(payload: dict) -> dict:
             session.clear()
             session.update(updated_session)
 
+        state_machine.record_conversation_turn(session, text, outbound_messages)
+
     for out in outbound_messages:
         send_message(out["phone"], out.get("text", ""), interactive=out.get("interactive"))
 
@@ -163,6 +165,7 @@ async def trigger_outage(vehicle_no: str):
 
     owner_phone = session["phone_number"]
     updated_session, outbound_messages = state_machine.process_message(session, "", owner_phone)
+    state_machine.record_conversation_turn(updated_session, "", outbound_messages)
     session_manager.update_session(updated_session)
 
     for out in outbound_messages:

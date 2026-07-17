@@ -62,7 +62,10 @@ T = {
         "Kripya battery/power check kar ke \"Done\" likhein."
     ),
 
-    "GPS_FIXED_CLOSE": "Badhiya! GPS wapas online aa gaya hai. Case close kar diya gaya hai. Dhanyawaad!",
+    "GPS_FIXED_CLOSE": (
+        "GPS data aana shuru ho gaya hai. Dhanyavaad!\n\n"
+        "Main aapki madad yahin continue karunga."
+    ),
 
     "ASK_PHYSICAL_DAMAGE": "Kya battery/wiring physically kharab hai ya replace/repair karni padegi?",
     "ASK_PHYSICAL_DAMAGE_MAIN_POWER": "Kya wiring ya fuse physically damage hai?",
@@ -72,6 +75,10 @@ T = {
     ),
     "ASK_GPS_OR_VEHICLE": (
         "Kya GPS kharab/tuta hai ya vehicle mein koi aur problem hai?"
+    ),
+    "ASK_VEHICLE_STATUS_AFTER_CLOSE": (
+        "GPS data abhi receive nahi ho raha hai.\n\n"
+        "Vehicle abhi kis condition mein hai?"
     ),
     "VEHICLE_STATUS_OPTIONS": (
         "Vehicle status options:\n"
@@ -83,7 +90,7 @@ T = {
     "ASK_EXPECTED_DATE": "Vehicle kab tak running mein aa jayegi?",
     "ASK_EXPECTED_DATE_WORKSHOP": "Vehicle kab tak running mein aa jayegi?",
     "ASK_EXPECTED_DATE_ACCIDENT": "Vehicle kab tak running mein aa jayegi?",
-    "SAVE_DATE_CLOSE": "✅ Thik hai. Humne {date} note kar liya hai.\n\nJab vehicle running mein aa jaye, hume message kar dijiye. Filhal case close kar rahe hain.\n\nDhanyavaad!",
+    "SAVE_DATE_CLOSE": "✅ Thik hai. Humne {date} note kar liya hai.\n\nJab vehicle running mein aa jaye, hume message kar dijiye. Main aapki madad yahin continue karunga.\n\nDhanyavaad!",
 
     "ASK_CURRENT_LOCATION": "Vehicle abhi kis location par hai?",
     "ASK_DESTINATION_LOCATION": "Vehicle kis jagah jaa rahi hai?",
@@ -128,9 +135,14 @@ T = {
         "Aapki request record ho gayi hai. Hamari team aapko zarurat par contact karegi.\n"
         "Dhanyavaad!"
     ),
+    "PREVIOUS_TICKET_FOUND": (
+        "Previous ticket found.\n\n"
+        "Continuing the existing issue.\n\n"
+        "Just message anytime if you need anything else."
+    ),
     "BOOKING_REDO": "Thik hai, kripya sahi detail dobara bhejein (location/date/time/contact).",
 
-    "FALLBACK": "Maaf kijiye, samajh nahi paaya. Kya aap thoda aur detail se bata sakte hain?",
+    "FALLBACK": "samajh nahi paaya.",
 }
 
 

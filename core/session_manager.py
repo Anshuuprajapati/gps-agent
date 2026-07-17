@@ -32,6 +32,7 @@ COLUMNS = [
     "driver_contact_confirmed", "awaiting_alternate_contact",
     "root_cause", "physical_damage", "contact_person",
     "contact_number", "ticket_id", "engineer_id", "last_prompt_text",
+    "conversation_summary",
     "pending_quick_date",
 ]
 

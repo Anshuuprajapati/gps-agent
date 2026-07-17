@@ -25,8 +25,34 @@ def _ensure_file():
         pd.DataFrame(columns=TICKET_COLUMNS).to_csv(settings.TICKETS_CSV, index=False)
 
 
+def _load_tickets_df() -> pd.DataFrame:
+    _ensure_file()
+    return pd.read_csv(settings.TICKETS_CSV, dtype=str).fillna("")
+
+
+def _find_existing_ticket(vehicle_no: str) -> dict | None:
+    vehicle_no = str(vehicle_no or "").strip().lower()
+    if not vehicle_no:
+        return None
+
+    with FileLock(settings.TICKETS_CSV + ".lock"):
+        df = _load_tickets_df()
+
+    match = df[df["vehicle_no"].str.strip().str.lower() == vehicle_no]
+    if match.empty:
+        return None
+
+    ticket = match.iloc[-1].to_dict()
+    ticket["existing_ticket"] = True
+    return ticket
+
+
 def create_ticket(session: dict) -> dict:
     _ensure_file()
+
+    existing_ticket = _find_existing_ticket(session.get("vehicle_no", ""))
+    if existing_ticket is not None and not session.get("force_new_ticket"):
+        return existing_ticket
 
     engineer = assign_engineer(session.get("extracted_service_location", "")) if session.get("vehicle_state") != "GPS_DAMAGED" else {"engineer_id": "", "engineer_name": "", "engineer_phone": ""}
 
@@ -53,8 +79,9 @@ def create_ticket(session: dict) -> dict:
     # vanishes from tickets.csv, even though that customer was already
     # told "Ticket TKT-XXXX confirmed."
     with FileLock(settings.TICKETS_CSV + ".lock"):
-        df = pd.read_csv(settings.TICKETS_CSV, dtype=str).fillna("")
+        df = _load_tickets_df()
         df = pd.concat([df, pd.DataFrame([ticket])], ignore_index=True)
         df.to_csv(settings.TICKETS_CSV, index=False)
 
+    ticket["existing_ticket"] = False
     return ticket

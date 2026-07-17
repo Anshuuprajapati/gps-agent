@@ -123,14 +123,16 @@ def _call_llm(user_prompt: str) -> str:
 
 # --------------------------------------------------------------- extraction --
 
-def extract_structured(current_state: str, instruction: str, user_message: str) -> dict:
+def extract_structured(current_state: str, instruction: str, user_message: str, conversation_context: str = "") -> dict:
     """
     Generic call: pass what you want extracted, get back a dict.
     Falls back to {"value": "", "confidence": "low"} on any failure so a
     flaky LLM response never crashes the flow — state_machine.py treats
     low confidence / empty value as "ask again".
     """
+    context_prefix = f"CONVERSATION_CONTEXT:\n{conversation_context}\n\n" if conversation_context.strip() else ""
     prompt = (
+        f"{context_prefix}"
         f"CURRENT_STATE: {current_state}\n"
         f"INSTRUCTION: {instruction}\n"
         f"USER_MESSAGE: \"{user_message}\"\n\n"
@@ -148,7 +150,7 @@ def extract_structured(current_state: str, instruction: str, user_message: str) 
 
 # ---- Small convenience wrappers used by state_machine.py ----
 
-def classify_yes_no(current_state: str, user_message: str) -> str:
+def classify_yes_no(current_state: str, user_message: str, conversation_context: str = "") -> str:
     result = extract_structured(
         current_state,
         "Classify the user's reply as YES, NO, or UNCLEAR (agreeing/confirming "
@@ -156,11 +158,12 @@ def classify_yes_no(current_state: str, user_message: str) -> str:
         "yes, theek hai, thik hai, nahin, no, nahi, repair, fix, replace as YES/NO "
         "where appropriate. Return {\"value\": \"YES|NO|UNCLEAR\"}.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "UNCLEAR").upper()
 
 
-def classify_wait_done_reply(current_state: str, user_message: str) -> str:
+def classify_wait_done_reply(current_state: str, user_message: str, conversation_context: str = "") -> str:
     """
     Used while the owner/driver is mid-troubleshooting (WAIT_DONE state).
     People don't only reply "Done" — they ask how to do it, or change their
@@ -180,11 +183,12 @@ def classify_wait_done_reply(current_state: str, user_message: str) -> str:
         "UNCLEAR (anything else). "
         "Return {\"value\": \"DONE|NEED_HELP|WANT_DRIVER|UNCLEAR\"}.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "UNCLEAR").upper()
 
 
-def classify_self_or_driver(current_state: str, user_message: str) -> str:
+def classify_self_or_driver(current_state: str, user_message: str, conversation_context: str = "") -> str:
     result = extract_structured(
         current_state,
         "Classify whether the user wants to handle this themselves (SELF) or "
@@ -192,11 +196,12 @@ def classify_self_or_driver(current_state: str, user_message: str) -> str:
         "haan/self/driver/repair as SELF or DRIVER if the meaning is clear. "
         "Return {\"value\": \"SELF|DRIVER|UNCLEAR\"}.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "UNCLEAR").upper()
 
 
-def classify_vehicle_status(current_state: str, user_message: str) -> str:
+def classify_vehicle_status(current_state: str, user_message: str, conversation_context: str = "") -> str:
     result = extract_structured(
         current_state,
         "Classify the user's message into one of: WORKSHOP, ACCIDENT, "
@@ -206,11 +211,12 @@ def classify_vehicle_status(current_state: str, user_message: str) -> str:
         "mentions GPS/device/tracker being broken, damaged, or removed. "
         "Return {\"value\": \"<one of these>\"}.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "UNCLEAR").upper()
 
 
-def extract_date(current_state: str, user_message: str) -> str:
+def extract_date(current_state: str, user_message: str, conversation_context: str = "") -> str:
     today = date.today().isoformat()
     result = extract_structured(
         current_state,
@@ -221,11 +227,12 @@ def extract_date(current_state: str, user_message: str) -> str:
         "actual date based on CURRENT_DATE. Return {\"value\": \"<normalized "
         "date or raw text>\"}.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "")
 
 
-def extract_time(current_state: str, user_message: str) -> str:
+def extract_time(current_state: str, user_message: str, conversation_context: str = "") -> str:
     result = extract_structured(
         current_state,
         "Extract a time or preferred visit time mentioned in the message. "
@@ -233,31 +240,34 @@ def extract_time(current_state: str, user_message: str) -> str:
         "return the raw text. For Hindi/Hinglish phrases like '5 baje', "
         "return '05:00 PM'. Return {\"value\": \"<normalized time or raw text>\"}.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "")
 
 
-def extract_free_text(current_state: str, user_message: str, what: str) -> str:
+def extract_free_text(current_state: str, user_message: str, what: str, conversation_context: str = "") -> str:
     result = extract_structured(
         current_state,
         f"Extract the {what} mentioned in the message. Return "
         f"{{\"value\": \"<extracted {what}>\"}}.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "")
 
 
-def extract_name_and_phone(current_state: str, user_message: str) -> dict:
+def extract_name_and_phone(current_state: str, user_message: str, conversation_context: str = "") -> dict:
     result = extract_structured(
         current_state,
         "Extract a person's name and a 10-digit Indian mobile number if "
         "present. Return {\"name\": \"...\", \"phone\": \"...\"}.",
         user_message,
+        conversation_context,
     )
     return {"name": result.get("name", ""), "phone": result.get("phone", "")}
 
 
-def extract_booking_slots(user_message: str) -> dict:
+def extract_booking_slots(user_message: str, conversation_context: str = "") -> dict:
     """
     Customers frequently give several booking details in one message at
     once ("Nagpur bypass ke paas hu, Pune jaana hai, kal subah 10 baje,
@@ -281,6 +291,7 @@ def extract_booking_slots(user_message: str) -> dict:
         '"service_date": "", "service_time_window": "", '
         '"contact_person": "", "contact_number": ""}',
         user_message,
+        conversation_context,
     )
     return {
         "current_location": (result.get("current_location") or "").strip(),
@@ -294,7 +305,7 @@ def extract_booking_slots(user_message: str) -> dict:
 
 # --------------------------------------------------------- knowledge base --
 
-def is_general_question(current_state: str, user_message: str) -> str:
+def is_general_question(current_state: str, user_message: str, conversation_context: str = "") -> str:
     """
     Decides whether the message is a reply to whatever the bot most
     recently asked (a date, yes/no, a location, "Done", etc.) or an
@@ -316,6 +327,7 @@ def is_general_question(current_state: str, user_message: str) -> str:
         "When in doubt, prefer FLOW_REPLY so the ongoing flow isn't "
         "interrupted unnecessarily.",
         user_message,
+        conversation_context,
     )
     return result.get("value", "FLOW_REPLY").upper()
 

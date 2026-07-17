@@ -147,4 +147,141 @@ def test_expected_date_closes_with_short_confirmation(monkeypatch):
 
     assert updated_session["current_state"] == "COMPLETED"
     assert "✅ Thik hai" in outbound[0]["text"]
-    assert "Filhal case close kar rahe hain" in outbound[0]["text"]
+    assert "Main aapki madad yahin continue karunga" in outbound[0]["text"]
+
+
+def test_conversation_memory_keeps_only_last_five_entries():
+    import core.state_machine as state_machine
+
+    session = {
+        "current_state": "ASK_SERVICE_DATE",
+        "conversation_summary": "\n".join([
+            "USER: one",
+            "BOT: two",
+            "USER: three",
+            "BOT: four",
+            "USER: five",
+        ]),
+    }
+
+    state_machine.record_conversation_turn(session, "six", [{"text": "seven"}])
+
+    assert session["conversation_summary"].splitlines() == [
+        "USER: three",
+        "BOT: four",
+        "USER: five",
+        "USER: six",
+        "BOT: seven",
+    ]
+
+
+def test_build_conversation_context_includes_saved_summary():
+    import core.state_machine as state_machine
+
+    session = {
+        "vehicle_no": "MH16EF9012",
+        "current_state": "ASK_SERVICE_DATE",
+        "vehicle_state": "RUNNING",
+        "conversation_summary": "USER: kal subah\nBOT: theek hai",
+    }
+
+    context = state_machine.build_conversation_context(session)
+
+    assert "current_state: ASK_SERVICE_DATE" in context
+    assert "vehicle_no: MH16EF9012" in context
+    assert "USER: kal subah" in context
+    assert "BOT: theek hai" in context
+
+
+def test_completed_state_uses_open_ended_reply(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {"current_state": "COMPLETED", "ticket_id": "TKT-1234"}
+
+    monkeypatch.setattr(state_machine.gps_service, "verify_gps", lambda _session: True)
+
+    updated_session, outbound = state_machine.handle_completed(session, "hello", "9999999999")
+
+    assert updated_session["current_state"] == "COMPLETED"
+    assert "GPS data aana shuru ho gaya hai" in outbound[0]["text"]
+    assert "continue" in outbound[0]["text"].lower()
+
+
+def test_completed_state_can_still_answer_general_questions(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {"current_state": "COMPLETED", "ticket_id": "TKT-1234", "last_prompt_text": "last prompt"}
+
+    monkeypatch.setattr(state_machine.llm, "is_general_question", lambda *_args, **_kwargs: "GENERAL_QUESTION")
+    monkeypatch.setattr(state_machine.llm, "answer_from_knowledge_base", lambda *_args, **_kwargs: "Hamari team 9 se 9 available hai.")
+
+    updated_session, outbound = state_machine.process_message(session, "Aap kitne baje tak available ho?", "9999999999")
+
+    assert updated_session["current_state"] == "COMPLETED"
+    assert "Hamari team 9 se 9 available hai." in outbound[0]["text"]
+    assert "last prompt" in outbound[0]["text"]
+
+
+def test_existing_ticket_is_reused_instead_of_creating_a_new_one(monkeypatch, tmp_path):
+    import pandas as pd
+    import services.ticket_service as ticket_service
+    from config import settings
+
+    tickets_csv = tmp_path / "tickets.csv"
+    pd.DataFrame([
+        {
+            "ticket_id": "TKT-EXIST01",
+            "vehicle_no": "MH16EF9012",
+            "issue_type": "BATTERY",
+            "current_location": "Nagpur",
+            "service_location": "Pune",
+            "service_date": "2026-07-18",
+            "service_time": "05:00 PM",
+            "contact_person": "Anshu",
+            "contact_number": "9876500000",
+            "engineer_id": "ENG-1",
+            "engineer_name": "Engineer One",
+            "engineer_phone": "919900000000",
+            "status": "ASSIGNED",
+        }
+    ]).to_csv(tickets_csv, index=False)
+
+    monkeypatch.setattr(settings, "TICKETS_CSV", str(tickets_csv))
+
+    session = {"vehicle_no": "MH16EF9012", "extracted_service_location": "Pune", "vehicle_state": "RUNNING"}
+
+    ticket = ticket_service.create_ticket(session)
+
+    assert ticket["ticket_id"] == "TKT-EXIST01"
+    assert ticket["existing_ticket"] is True
+
+    saved = pd.read_csv(tickets_csv, dtype=str).fillna("")
+    assert len(saved) == 1
+    assert saved.iloc[0]["ticket_id"] == "TKT-EXIST01"
+
+
+def test_completed_state_reassures_when_gps_is_back_online(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {"current_state": "COMPLETED", "vehicle_no": "MH16EF9012"}
+
+    monkeypatch.setattr(state_machine.gps_service, "verify_gps", lambda _session: True)
+
+    updated_session, outbound = state_machine.handle_completed(session, "hello gadi running ho gyi", "9999999999")
+
+    assert updated_session["current_state"] == "COMPLETED"
+    assert "GPS data aana shuru ho gaya hai" in outbound[0]["text"]
+
+
+def test_completed_state_reopens_vehicle_status_flow_when_gps_is_still_offline(monkeypatch):
+    import core.state_machine as state_machine
+
+    session = {"current_state": "COMPLETED", "vehicle_no": "MH16EF9012"}
+
+    monkeypatch.setattr(state_machine.gps_service, "verify_gps", lambda _session: False)
+
+    updated_session, outbound = state_machine.handle_completed(session, "haa gps nahi chal raha", "9999999999")
+
+    assert updated_session["current_state"] == "ASK_VEHICLE_STATUS"
+    assert "GPS data abhi receive nahi ho raha hai" in outbound[0]["text"]
+    assert "Workshop" in outbound[1]["interactive"] ["action"]["buttons"][0]["reply"]["title"]
