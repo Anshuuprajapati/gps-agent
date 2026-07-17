@@ -978,8 +978,48 @@ def handle_confirm_summary(session, message, sender_phone):
 
 
 def handle_completed(session, message, sender_phone):
+    """Handle messages when conversation is in COMPLETED state."""
+    conversation_context = build_conversation_context(session)
+    
     if gps_service.verify_gps(session):
         return session, [_msg(sender_phone, render("GPS_FIXED_CLOSE"))]
+
+    raw = message.strip().lower()
+    
+    if "nahi" in raw or "no" in raw or "not" in raw:
+        if "vehicle" in raw or "gaadi" in raw or "running" in raw or "chal rahi" in raw or "workshop" in raw or "accident" in raw:
+            vehicle_status = llm.classify_vehicle_status(session["current_state"], message, conversation_context)
+            if vehicle_status and vehicle_status != "UNCLEAR":
+                session["vehicle_state"] = vehicle_status
+                expected_date = llm.extract_date(session["current_state"], message, conversation_context)
+                if expected_date:
+                    session["extracted_appointment_date"] = expected_date
+                    session["service_date"] = expected_date
+                session["current_state"] = "COMPLETED"
+                
+                # Build updated booking summary to show user
+                updated_summary = _build_booking_summary(session)
+                response = f"Thik hai. Vehicle status aur booking details update ho gayi:\n\n{updated_summary}"
+                return session, [_msg(sender_phone, response)]
+
+    if "correction" in raw or "change" in raw or "update" in raw or "wrong" in raw:
+        session["current_state"] = "ASK_BOOKING_CORRECTION"
+        return session, [_msg(sender_phone, render(
+            "BOOKING_CORRECTION",
+            current_location=session.get("current_location", ""),
+            service_location=session.get("extracted_service_location", ""),
+            service_date=session.get("service_date", ""),
+            service_time=session.get("service_time_window", session.get("service_time", "")),
+            contact_person=session.get("contact_person", ""),
+            contact_number=session.get("contact_number", ""),
+        ))]
+
+    is_info_dense = _looks_information_dense(message)
+    if is_info_dense:
+        slots = llm.extract_booking_slots(message, conversation_context)
+        if _apply_booking_slots(session, message, slots):
+            response = "Booking details update ho gayi. Aapko zarurat par contact karenge. Dhanyavaad!"
+            return session, [_msg(sender_phone, response)]
 
     session["current_state"] = "ASK_VEHICLE_STATUS"
     return session, [

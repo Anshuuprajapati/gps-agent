@@ -337,6 +337,45 @@ def test_direct_tech_skips_contact_person_prompt_if_driver_exists(monkeypatch):
     assert any("TKT-SKIP-CONTACT" in (out.get("text") or "") for out in outbound)
 
 
+def test_completed_state_handles_vehicle_status_correction(monkeypatch):
+    import core.state_machine as state_machine
+    from core import llm_handler
+
+    session = {
+        "current_state": "COMPLETED",
+        "vehicle_no": "MH16EF9012",
+        "vehicle_state": "WORKSHOP",
+        "extracted_appointment_date": "2026-07-20",
+        "extracted_service_location": "punjabi Bagh",
+        "service_time_window": "11:00 AM",
+        "contact_number": "8290323758",
+        "contact_person": "Sarvesh Swami",
+        "current_location": "Nagpur",
+    }
+
+    monkeypatch.setattr(
+        llm_handler,
+        "classify_vehicle_status",
+        lambda *_args, **_kwargs: "RUNNING"
+    )
+    monkeypatch.setattr(
+        llm_handler,
+        "extract_date",
+        lambda *_args, **_kwargs: "2026-07-15"
+    )
+
+    updated_session, outbound = state_machine.handle_completed(session, "nahi vehicle running me hai 15 tariq ko aayegi", "9999999999")
+
+    assert updated_session["vehicle_state"] == "RUNNING"
+    assert updated_session["extracted_appointment_date"] == "2026-07-15"
+    assert updated_session["service_date"] == "2026-07-15", "service_date should be updated with new date"
+    assert updated_session["current_state"] == "COMPLETED"
+    response_text = outbound[0]["text"]
+    assert "update" in response_text.lower(), "Response should mention update"
+    assert "2026-07-15" in response_text, "Response should show updated date in booking summary"
+    assert "Sarvesh Swami" in response_text, "Response should preserve driver name in booking summary"
+
+
 def test_vehicle_status_unclear_extracts_destination_and_continues(monkeypatch):
     import core.state_machine as state_machine
     from core import llm_handler
