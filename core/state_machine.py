@@ -549,11 +549,15 @@ def _ticket_confirmation_messages(session: dict, ticket: dict, sender_phone: str
     if ticket.get("existing_ticket"):
         session["ticket_id"] = ticket.get("ticket_id", session.get("ticket_id", ""))
         session["engineer_id"] = ticket.get("engineer_id", session.get("engineer_id", ""))
+        session["engineer_name"] = ticket.get("engineer_name", session.get("engineer_name", ""))
+        session["engineer_phone"] = ticket.get("engineer_phone", session.get("engineer_phone", ""))
         session["current_state"] = "COMPLETED"
         return [_msg(sender_phone, render("PREVIOUS_TICKET_FOUND"))]
 
     session["ticket_id"] = ticket["ticket_id"]
     session["engineer_id"] = ticket["engineer_id"]
+    session["engineer_name"] = ticket["engineer_name"]
+    session["engineer_phone"] = ticket["engineer_phone"]
     session["current_state"] = "COMPLETED"
 
     summary_text = _build_booking_summary(session)
@@ -644,7 +648,7 @@ def handle_ask_vehicle_status(session, message, sender_phone):
 
 def handle_ask_expected_date(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
-    date_value = llm.extract_date(session["current_state"], message, conversation_context)
+    date_value = _extract_date_hinglish(session["current_state"], message, conversation_context)
     if not date_value:
         return session, [_msg(sender_phone, "Date samajh nahi aayi, kripya dobara bhejein.")]
 
@@ -670,6 +674,25 @@ def handle_ask_gps_repair_confirmation(session, message, sender_phone):
         return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
 
     if answer == "NO":
+        raw = message.strip().lower()
+        # Check if vehicle is on the way and will inform later
+        if any(keyword in raw for keyword in ["on the way", "aayegi", "jab aay", "inform", "bataaunga", "bataunga", "chal raha", "chal rahi"]):
+            # Extract expected date when vehicle will arrive
+            expected_date = _extract_date_hinglish(session["current_state"], message, conversation_context)
+            
+            if expected_date:
+                session["extracted_appointment_date"] = expected_date
+                session["service_date"] = expected_date
+                session["current_state"] = "COMPLETED"
+                updated_summary = _build_booking_summary(session)
+                response = f"Thik hai. Jab vehicle aayegi tab aap inform kar dijiye.\n\nBooking Summary:\n{updated_summary}"
+                return session, [_msg(sender_phone, response)]
+            else:
+                # Ask for expected date when vehicle will arrive
+                session["current_state"] = "ASK_GPS_UPDATE_DATE"
+                return session, [_msg(sender_phone, "Thik hai. Phir kab update lu? Expected date aur time bhej do.")]
+
+    if session.get("current_state") == "ASK_GPS_REPAIR_CONFIRMATION":
         session["current_state"] = "COMPLETED"
         return session, [_msg(sender_phone, "Thik hai. Agar baad mein service chahiye ho, hume message kar dijiye. Dhanyavaad!")]
 
@@ -743,7 +766,7 @@ def handle_ask_service_city_preference(session, message, sender_phone):
 
 def handle_ask_service_date(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
-    value = llm.extract_date(session["current_state"], message, conversation_context)
+    value = _extract_date_hinglish(session["current_state"], message, conversation_context)
     if value:
         session["service_date"] = value
         session["current_state"] = "ASK_SERVICE_TIME_WINDOW"
@@ -777,7 +800,7 @@ def handle_ask_service_date_options(session, message, sender_phone):
     elif raw in ("3", "3️⃣"):
         return session, [_msg(sender_phone, render("ASK_SERVICE_DATE_CUSTOM"))]
     else:
-        date_value = llm.extract_date(session["current_state"], message, conversation_context)
+        date_value = _extract_date_hinglish(session["current_state"], message, conversation_context)
 
     if date_value:
         session["service_date"] = date_value
@@ -977,6 +1000,53 @@ def handle_confirm_summary(session, message, sender_phone):
     return session, [_msg(sender_phone, render("FALLBACK"))]
 
 
+def _extract_date_hinglish(current_state: str, message: str, conversation_context: str) -> str:
+    """
+    Extract date from Hinglish format like "25tariq ko", "25th tarikh", etc.
+    Falls back to LLM extraction if pattern matching fails.
+    """
+    # Try to match patterns like "25tariq", "25th", "25 tarikh", etc.
+    hinglish_patterns = [
+        r"(\d{1,2})\s*(?:tariq|tarikh|tarix|date|din|ko)",  # 25 tariq, 25tariq, 25 tarikh
+        r"(\d{1,2})(?:st|nd|rd|th)?\s+(?:july|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+    ]
+    
+    message_lower = message.lower()
+    for pattern in hinglish_patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            day = int(match.group(1))
+            if 1 <= day <= 31:
+                # Assume current month
+                now = datetime.now()
+                try:
+                    # If day is in the future of current month, use current month
+                    # Otherwise use next month
+                    target_date = now.replace(day=day)
+                    if target_date < now:
+                        # Move to next month
+                        if now.month == 12:
+                            target_date = target_date.replace(year=now.year + 1, month=1)
+                        else:
+                            target_date = target_date.replace(month=now.month + 1)
+                    return target_date.date().isoformat()
+                except ValueError:
+                    # Day doesn't exist in this month (e.g., Feb 31)
+                    pass
+    
+    # Fall back to LLM extraction
+    return llm.extract_date(current_state, message, conversation_context)
+
+
+def _is_engineer_inquiry(message: str) -> bool:
+    """Check if user is asking about engineer/technician arrival time."""
+    text = message.lower()
+    return bool(re.search(
+        r"\b(engineer|technician|tech|mechanic|aayega|aa jayega|kab tak|kab aayegi|kab aayega|how long|eta|arrival|when|kitne time|kitne der)\b",
+        text,
+    ))
+
+
 def handle_completed(session, message, sender_phone):
     """Handle messages when conversation is in COMPLETED state."""
     conversation_context = build_conversation_context(session)
@@ -986,12 +1056,21 @@ def handle_completed(session, message, sender_phone):
 
     raw = message.strip().lower()
     
+    # Check if user is asking about engineer arrival time
+    if _is_engineer_inquiry(message) and session.get("ticket_id"):
+        engineer_name = session.get("engineer_name", "Aapka engineer")
+        engineer_phone = session.get("engineer_phone", "")
+        response = f"{engineer_name} aapko contact kar lenge jab apne aapke paas aane wale ho. Kripya phone sambhal kar rakhiye.\n\nTicket ID: {session.get('ticket_id', '')}"
+        if engineer_phone:
+            response = f"📞 {engineer_name}: {engineer_phone}\n\n{response}"
+        return session, [_msg(sender_phone, response)]
+    
     if "nahi" in raw or "no" in raw or "not" in raw:
         if "vehicle" in raw or "gaadi" in raw or "running" in raw or "chal rahi" in raw or "workshop" in raw or "accident" in raw:
             vehicle_status = llm.classify_vehicle_status(session["current_state"], message, conversation_context)
             if vehicle_status and vehicle_status != "UNCLEAR":
                 session["vehicle_state"] = vehicle_status
-                expected_date = llm.extract_date(session["current_state"], message, conversation_context)
+                expected_date = _extract_date_hinglish(session["current_state"], message, conversation_context)
                 if expected_date:
                     session["extracted_appointment_date"] = expected_date
                     session["service_date"] = expected_date
@@ -1021,11 +1100,34 @@ def handle_completed(session, message, sender_phone):
             response = "Booking details update ho gayi. Aapko zarurat par contact karenge. Dhanyavaad!"
             return session, [_msg(sender_phone, response)]
 
-    session["current_state"] = "ASK_VEHICLE_STATUS"
-    return session, [
-        _msg(sender_phone, render("ASK_VEHICLE_STATUS_AFTER_CLOSE")),
-        _vehicle_status_options_message(sender_phone),
-    ]
+    # Only show GPS error if no ticket has been created yet
+    if not session.get("ticket_id"):
+        session["current_state"] = "ASK_VEHICLE_STATUS"
+        return session, [
+            _msg(sender_phone, render("ASK_VEHICLE_STATUS_AFTER_CLOSE")),
+            _vehicle_status_options_message(sender_phone),
+        ]
+    
+    # Ticket exists but message doesn't match any pattern - acknowledge and confirm booking
+    return session, [_msg(sender_phone, f"Aapka booking confirm hai.\n\nTicket ID: {session.get('ticket_id', '')}\n\nAur kuch madad chahiye toh batayein.")]
+
+
+def handle_ask_gps_update_date(session, message, sender_phone):
+    """Handle date input when GPS is not working but vehicle is on the way."""
+    conversation_context = build_conversation_context(session)
+    
+    expected_date = _extract_date_hinglish(session["current_state"], message, conversation_context)
+    
+    if expected_date:
+        session["extracted_appointment_date"] = expected_date
+        session["service_date"] = expected_date
+        session["current_state"] = "COMPLETED"
+        updated_summary = _build_booking_summary(session)
+        response = f"Thik hai. Booking confirmed ho gayi:\n\n{updated_summary}"
+        return session, [_msg(sender_phone, response)]
+    else:
+        return session, [_msg(sender_phone, "Kripya expected date aur time format mein bhej do. Jaise: kal 5 baje, 2026-07-20 11 am")]
+
     
 def handle_direct_tech_request(session, message, sender_phone):
     return _handle_direct_tech_request(session, message, sender_phone)
@@ -1044,6 +1146,7 @@ HANDLERS = {
     "ASK_VEHICLE_STATUS": handle_ask_vehicle_status,
     "ASK_EXPECTED_DATE": handle_ask_expected_date,
     "ASK_GPS_REPAIR_CONFIRMATION": handle_ask_gps_repair_confirmation,
+    "ASK_GPS_UPDATE_DATE": handle_ask_gps_update_date,
     "ASK_CURRENT_LOCATION": handle_ask_current_location,
     "ASK_DESTINATION_LOCATION": handle_ask_destination_location,
     "ASK_SERVICE_CITY_CONFIRMATION": handle_ask_service_city_confirmation,

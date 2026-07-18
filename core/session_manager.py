@@ -31,7 +31,7 @@ COLUMNS = [
     "service_date", "service_time", "service_time_window",
     "driver_contact_confirmed", "awaiting_alternate_contact",
     "root_cause", "physical_damage", "contact_person",
-    "contact_number", "ticket_id", "engineer_id", "last_prompt_text",
+    "contact_number", "ticket_id", "engineer_id", "engineer_name", "engineer_phone", "last_prompt_text",
     "conversation_summary",
     "pending_quick_date",
 ]
