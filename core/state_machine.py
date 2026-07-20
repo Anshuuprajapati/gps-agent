@@ -616,6 +616,22 @@ def handle_ask_vehicle_status(session, message, sender_phone):
         return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
 
     if status == "GPS_DAMAGED":
+        # Check if vehicle is on the way and will inform later
+        raw = message.lower()
+        if any(keyword in raw for keyword in ["on the way", "aayegi", "aayga", "jab aay", "inform", "bataaunga", "bataunga", "chal raha", "chal rahi", "aayega", "aa jayega"]):
+            # Extract expected date or default to tomorrow
+            expected_date = _extract_date_hinglish(session["current_state"], message, conversation_context)
+            if not expected_date:
+                # Default to tomorrow if no date provided
+                expected_date = add_days_to_today(1)
+            
+            session["vehicle_state"] = status
+            session["extracted_appointment_date"] = expected_date
+            session["service_date"] = expected_date
+            session["current_state"] = "COMPLETED"
+            return session, [_msg(sender_phone, render("GPS_DAMAGED_ON_THE_WAY"))]
+        
+        # Normal GPS repair flow if vehicle is not on the way
         session["vehicle_state"] = status
         session["current_state"] = "ASK_GPS_REPAIR_CONFIRMATION"
         return session, [_button_message(sender_phone, render("ASK_GPS_REPAIR_CONFIRMATION"), [("PAYLOAD_YES", "Haan"), ("PAYLOAD_NO", "Nahi")])]
