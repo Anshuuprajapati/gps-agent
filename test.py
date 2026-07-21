@@ -44,6 +44,7 @@ from services import gps_service, ticket_service, engineer_service  # noqa: E402
 from config import settings                    # noqa: E402
 
 _REAL_ANSWER_FROM_KB = llm_handler.answer_from_knowledge_base
+_REAL_CLASSIFY_GLOBAL_INTENT = llm_handler.classify_global_intent
 
 
 # ============================================================== fixtures ==
@@ -83,20 +84,17 @@ def no_real_llm(monkeypatch):
         "classify_yes_no", "classify_wait_done_reply", "classify_self_or_driver",
         "classify_vehicle_status", "extract_date", "extract_time",
         "extract_free_text", "extract_name_and_phone", "answer_from_knowledge_base",
-        "extract_booking_slots",
+        "extract_booking_slots", "extract_tech_dispatch_slots",
     ):
         monkeypatch.setattr(sm.llm, name, _boom, raising=True)
 
-    # is_general_question runs on EVERY process_message() call regardless of
-    # state, so default it to "not a general question" rather than making
-    # every existing test mock it — tests that specifically exercise the
-    # knowledge-base path override this per-test.
-    monkeypatch.setattr(sm.llm, "is_general_question", MagicMock(return_value="FLOW_REPLY"), raising=True)
-
-    # classify_ticket_inquiry runs on every process_message() call whenever
-    # the session already has a ticket_id, so default it the same way —
-    # tests exercising the ticket-status path override this per-test.
-    monkeypatch.setattr(sm.llm, "classify_ticket_inquiry", MagicMock(return_value="OTHER"), raising=True)
+    # classify_global_intent runs on EVERY process_message() call regardless
+    # of state (it replaced is_general_question/classify_ticket_inquiry/
+    # is_driver_update_intent as one consolidated check), so default it to
+    # "not a special case" rather than making every existing test mock it —
+    # tests exercising the driver-update/ticket-inquiry/general-question
+    # paths override this per-test.
+    monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="FLOW_REPLY"), raising=True)
     yield
 
 
@@ -764,7 +762,7 @@ class TestAPIVerificationEveryStep:
 
 class TestKnowledgeBase:
     def test_general_question_answered_without_changing_state(self, monkeypatch):
-        monkeypatch.setattr(sm.llm, "is_general_question", MagicMock(return_value="GENERAL_QUESTION"))
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="GENERAL_QUESTION"))
         monkeypatch.setattr(
             sm.llm, "answer_from_knowledge_base",
             MagicMock(return_value="Hamari support team subah 9 se raat 9 baje tak available hai."),
@@ -784,18 +782,18 @@ class TestKnowledgeBase:
     def test_flow_reply_is_not_treated_as_general_question(self, monkeypatch):
         classify_mock = MagicMock(return_value="YES")
         monkeypatch.setattr(sm.llm, "classify_yes_no", classify_mock)
-        general_q_mock = MagicMock(return_value="FLOW_REPLY")
-        monkeypatch.setattr(sm.llm, "is_general_question", general_q_mock)
+        global_intent_mock = MagicMock(return_value="FLOW_REPLY")
+        monkeypatch.setattr(sm.llm, "classify_global_intent", global_intent_mock)
 
         session = base_session(current_state="ASK_PHYSICAL_DAMAGE", root_cause=gps_service.BATTERY_ISSUE)
         session, outbound = sm.process_message(session, "haan sahi hai", "919999900001")
 
-        general_q_mock.assert_called_once()
+        global_intent_mock.assert_called_once()
         assert session["current_state"] == "ASK_CURRENT_LOCATION"
 
     def test_button_payloads_skip_general_question_check_entirely(self, monkeypatch):
-        general_q_mock = MagicMock(side_effect=AssertionError("should not classify a raw button payload"))
-        monkeypatch.setattr(sm.llm, "is_general_question", general_q_mock)
+        global_intent_mock = MagicMock(side_effect=AssertionError("should not classify a raw button payload"))
+        monkeypatch.setattr(sm.llm, "classify_global_intent", global_intent_mock)
 
         session = base_session(current_state="ASK_HANDLER", root_cause=gps_service.BATTERY_ISSUE, driver_name="Deepak", driver_phone="9871234560")
         session, outbound = sm.process_message(session, "PAYLOAD_DRIVER", "919999900001")
@@ -832,6 +830,121 @@ class TestKnowledgeBase:
 
         answer = sm.llm.answer_from_knowledge_base("kuch bhi poochna hai")
         assert "available nahi hai" in answer
+
+
+# ==================== 19b. TICKET-STATUS INQUIRY (via classify_global_intent) =
+
+class TestTicketInquiryRouting:
+    def test_explicit_ticket_id_is_looked_up_without_any_llm_call(self, monkeypatch):
+        """An explicit TKT-XXXXXXXX in the message is a cheap regex parse —
+        it must never even reach classify_global_intent."""
+        intent_mock = MagicMock(side_effect=AssertionError("should not classify an explicit ticket ID"))
+        monkeypatch.setattr(sm.llm, "classify_global_intent", intent_mock)
+        monkeypatch.setattr(
+            sm.ticket_service, "get_ticket_by_id",
+            MagicMock(return_value={
+                "ticket_id": "TKT-448C059E", "status": "ASSIGNED", "vehicle_no": "MH16EF9012",
+                "service_location": "Punjabi Bagh", "service_date": "2026-07-18",
+                "service_time": "11:00 AM", "engineer_name": "Rahul Deshmukh",
+                "engineer_phone": "919000000005",
+            }),
+        )
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.process_message(session, "TKT-448C059E", "919999900001")
+
+        assert "TKT-448C059E" in outbound[0]["text"]
+        assert "Punjabi Bagh" in outbound[0]["text"]
+
+    def test_ticket_inquiry_intent_uses_session_own_ticket_id(self, monkeypatch):
+        """'Kya meri koi complaint register hai' (no ID given) falls back
+        to whatever ticket is already on this session."""
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="TICKET_INQUIRY"))
+        monkeypatch.setattr(
+            sm.ticket_service, "get_ticket_by_id",
+            MagicMock(return_value={
+                "ticket_id": "TKT-999AAAAA", "status": "ASSIGNED", "vehicle_no": "MH16EF9012",
+                "service_location": "Nagpur", "service_date": "2026-07-21",
+                "service_time": "05:00 PM", "engineer_name": "Test Engineer",
+                "engineer_phone": "919000000001",
+            }),
+        )
+        session = base_session(current_state="COMPLETED", ticket_id="TKT-999AAAAA")
+
+        session, outbound = sm.process_message(session, "kya meri koi complaint register hai", "919999900001")
+
+        assert "TKT-999AAAAA" in outbound[0]["text"]
+        assert "ASSIGNED" in outbound[0]["text"]
+
+    def test_ticket_inquiry_intent_with_no_ticket_at_all_replies_gracefully(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="TICKET_INQUIRY"))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.process_message(session, "kya meri koi complaint register hai", "919999900001")
+
+        assert "nahi mila" in outbound[0]["text"].lower()
+
+    def test_classify_global_intent_parses_llm_response(self, monkeypatch):
+        """Unit-level check of the real function (not the autouse mock) —
+        stubs the raw LLM call so this doesn't need network access."""
+        monkeypatch.setattr(sm.llm, "classify_global_intent", _REAL_CLASSIFY_GLOBAL_INTENT, raising=True)
+        monkeypatch.setattr(llm_handler, "_call_llm", lambda *_a, **_k: '{"value": "TICKET_INQUIRY"}')
+        result = sm.llm.classify_global_intent("COMPLETED", "kya meri koi complaint register hai")
+        assert result == "TICKET_INQUIRY"
+
+    def test_classify_global_intent_defaults_to_flow_reply_on_llm_failure(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_global_intent", _REAL_CLASSIFY_GLOBAL_INTENT, raising=True)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("network down")
+        monkeypatch.setattr(llm_handler, "_call_llm", _boom)
+        result = sm.llm.classify_global_intent("ASK_VEHICLE_STATUS", "anything")
+        assert result == "FLOW_REPLY"
+
+
+class TestDirectTechDispatchViaGlobalIntent:
+    def test_phrasing_the_regex_misses_still_dispatches_via_llm_intent(self, monkeypatch):
+        """'send your person' isn't caught by the cheap _is_direct_tech_request
+        regex (only 'send tech/technician/engineer' or Hinglish subject+verb
+        match) — it has to fall through to classify_global_intent."""
+        assert not sm._is_direct_tech_request("Hmm gps is not working send your person in Punjab Bagh")
+
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="DIRECT_TECH_DISPATCH"))
+        monkeypatch.setattr(
+            sm.llm, "extract_tech_dispatch_slots",
+            lambda *_a, **_k: {
+                "service_location": "Punjab Bagh", "service_date": "",
+                "service_time_window": "", "contact_person": "", "contact_number": "",
+            },
+        )
+        monkeypatch.setattr(
+            sm.ticket_service, "create_ticket",
+            MagicMock(return_value={
+                "ticket_id": "TKT-DISPATCH1", "engineer_id": "ENG-1",
+                "engineer_name": "Engineer One", "engineer_phone": "919900000000",
+                "existing_ticket": False,
+            }),
+        )
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.process_message(
+            session, "Hmm gps is not working send your person in Punjab Bagh", "919999900001",
+        )
+
+        assert session["current_state"] == "COMPLETED"
+        assert session["extracted_service_location"] == "Punjab Bagh"
+        assert any("TKT-DISPATCH1" in (out.get("text") or "") for out in outbound)
+
+    def test_plain_status_update_is_not_misrouted_as_dispatch(self, monkeypatch):
+        """A bare GPS-damage status report with no request to send anyone
+        must stay FLOW_REPLY, not get swept into dispatch."""
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="FLOW_REPLY"))
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="GPS_DAMAGED"))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.process_message(session, "gps kharab hai", "919999900001")
+
+        assert session["current_state"] == "ASK_GPS_REPAIR_CONFIRMATION"
 
 
 # ============================ 20. BUG-FIX REGRESSION TESTS ================

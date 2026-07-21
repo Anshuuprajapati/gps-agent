@@ -212,7 +212,7 @@ def test_completed_state_can_still_answer_general_questions(monkeypatch):
 
     session = {"current_state": "COMPLETED", "ticket_id": "TKT-1234", "last_prompt_text": "last prompt"}
 
-    monkeypatch.setattr(state_machine.llm, "is_general_question", lambda *_args, **_kwargs: "GENERAL_QUESTION")
+    monkeypatch.setattr(state_machine.llm, "classify_global_intent", lambda *_args, **_kwargs: "GENERAL_QUESTION")
     monkeypatch.setattr(state_machine.llm, "answer_from_knowledge_base", lambda *_args, **_kwargs: "Hamari team 9 se 9 available hai.")
 
     updated_session, outbound = state_machine.process_message(session, "Aap kitne baje tak available ho?", "9999999999")
@@ -414,7 +414,7 @@ def test_driver_update_message_extracts_and_applies_new_driver(monkeypatch):
         "driver_phone": "9876543210",
     }
 
-    monkeypatch.setattr(llm_handler, "is_driver_update_intent", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(llm_handler, "classify_global_intent", lambda *_args, **_kwargs: "DRIVER_UPDATE")
     monkeypatch.setattr(
         llm_handler,
         "extract_name_and_phone",
@@ -522,7 +522,12 @@ def test_direct_send_tech_message_creates_ticket_without_asking_status(monkeypat
     assert any("TKT-DIRECT1" in (out.get("text") or "") for out in outbound)
 
 
-def test_direct_send_tech_asks_only_missing_contact_person(monkeypatch):
+def test_direct_send_tech_defaults_missing_contact_and_creates_ticket(monkeypatch):
+    """
+    A direct dispatch request only ever blocks on location — missing
+    contact info (or date/time) is auto-defaulted so the ticket is
+    created immediately instead of asking a follow-up question.
+    """
     import core.state_machine as state_machine
 
     session = {
@@ -542,18 +547,36 @@ def test_direct_send_tech_asks_only_missing_contact_person(monkeypatch):
             "contact_number": "",
         },
     )
+    monkeypatch.setattr(
+        state_machine.ticket_service,
+        "create_ticket",
+        lambda session: {
+            "ticket_id": "TKT-DIRECT2",
+            "engineer_id": "ENG-1",
+            "engineer_name": "Engineer One",
+            "engineer_phone": "919900000000",
+            "existing_ticket": False,
+        },
+    )
 
     updated_session, outbound = state_machine.process_message(session, "Send tech by tomorrow at Punjabi Bagh 11 am", "9999999999")
 
-    assert updated_session["current_state"] == "ASK_CONTACT_PERSON"
+    assert updated_session["current_state"] == "COMPLETED"
     assert updated_session["extracted_service_location"] == "Punjabi Bagh"
     assert updated_session["service_date"] == "2026-07-18"
     assert updated_session["service_time_window"] == "11:00 AM"
-    assert "contact person" in outbound[0]["text"].lower()
-    assert "vehicle abhi kis condition" not in outbound[0]["text"].lower()
+    assert updated_session["contact_person"] == "NOT_PROVIDED"
+    assert updated_session["contact_number"] == "NOT_PROVIDED"
+    assert any("TKT-DIRECT2" in (out.get("text") or "") for out in outbound)
 
 
-def test_direct_send_tech_location_then_yes_advances_without_repeating(monkeypatch):
+def test_direct_send_tech_location_only_then_creates_ticket_with_defaults(monkeypatch):
+    """
+    Once location is captured (even if it took a follow-up because it was
+    missing from the first message), a direct dispatch request no longer
+    asks for date/time/contact — those auto-default and the ticket is
+    created immediately.
+    """
     import core.state_machine as state_machine
 
     session = {
@@ -586,25 +609,25 @@ def test_direct_send_tech_location_then_yes_advances_without_repeating(monkeypat
         "contact_person": "",
         "contact_number": "",
     })
+    monkeypatch.setattr(
+        state_machine.ticket_service,
+        "create_ticket",
+        lambda session: {
+            "ticket_id": "TKT-DIRECT3",
+            "engineer_id": "ENG-1",
+            "engineer_name": "Engineer One",
+            "engineer_phone": "919900000000",
+            "existing_ticket": False,
+        },
+    )
 
     updated_session, outbound = state_machine.process_message(updated_session, "Punjabi Bagh", "9999999999")
 
-    assert updated_session["current_state"] == "ASK_SERVICE_DATE"
-    assert "aaj service book" in outbound[0]["text"].lower() or "kal service book" in outbound[0]["text"].lower()
-
-    class DummyLLM:
-        def extract_date(self, *_args, **_kwargs):
-            return ""
-
-        def classify_yes_no(self, *_args, **_kwargs):
-            return "YES"
-
-    monkeypatch.setattr(state_machine, "llm", DummyLLM())
-    updated_session, outbound = state_machine.handle_ask_service_date(updated_session, "haa", "9999999999")
-
+    assert updated_session["current_state"] == "COMPLETED"
+    assert updated_session["extracted_service_location"] == "Punjabi Bagh"
     assert updated_session["service_date"]
-    assert updated_session["current_state"] == "ASK_SERVICE_TIME_WINDOW"
-    assert "time" in outbound[0]["text"].lower()
+    assert updated_session["service_time_window"]
+    assert any("TKT-DIRECT3" in (out.get("text") or "") for out in outbound)
 
 
 def test_completed_state_reassures_when_gps_is_back_online(monkeypatch):

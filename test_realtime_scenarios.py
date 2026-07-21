@@ -173,24 +173,20 @@ def default_llm_guards(monkeypatch):
         "classify_yes_no", "classify_wait_done_reply", "classify_self_or_driver",
         "classify_vehicle_status", "extract_date", "extract_time",
         "extract_free_text", "extract_name_and_phone", "extract_booking_slots",
-        "extract_tech_dispatch_slots",
-        "answer_from_knowledge_base", "is_general_question", "classify_ticket_inquiry",
+        "extract_tech_dispatch_slots", "answer_from_knowledge_base",
     ):
         monkeypatch.setattr(sm.llm, fn, _boom, raising=False)
 
-    # Default: every message is a flow reply (not a general question).
-    # Tests that want to exercise the KB path override this themselves.
+    # classify_global_intent runs on EVERY process_message() call regardless
+    # of state (it replaced is_general_question/classify_ticket_inquiry/
+    # is_driver_update_intent as one consolidated check) — without a default
+    # it would silently hit the real network on every test, producing flaky
+    # pass/fail depending on how the live model happened to classify each
+    # message. Tests exercising the driver-update/ticket-inquiry/general-
+    # question paths override this themselves.
     monkeypatch.setattr(
-        sm.llm, "is_general_question",
+        sm.llm, "classify_global_intent",
         MagicMock(return_value="FLOW_REPLY"),
-        raising=False,
-    )
-    # Same default for the ticket-status-inquiry check (runs whenever the
-    # session already has a ticket_id) — tests exercising that path
-    # override this themselves.
-    monkeypatch.setattr(
-        sm.llm, "classify_ticket_inquiry",
-        MagicMock(return_value="OTHER"),
         raising=False,
     )
     yield
@@ -678,10 +674,10 @@ class TestScenario10_MidFlowQuestion:
     def test_general_knowledge_question_mid_flow_answered_and_state_preserved(self, monkeypatch):
         """
         Manual doc §15: "Aap kitne baje tak available ho?" during booking flow.
-        is_general_question returns GENERAL_QUESTION → KB answer → pending question re-appended.
+        classify_global_intent returns GENERAL_QUESTION → KB answer → pending question re-appended.
         """
         monkeypatch.setattr(
-            sm.llm, "is_general_question",
+            sm.llm, "classify_global_intent",
             MagicMock(return_value="GENERAL_QUESTION"),
         )
         monkeypatch.setattr(
@@ -703,7 +699,7 @@ class TestScenario10_MidFlowQuestion:
 
     def test_kb_question_not_in_knowledge_base_gives_fallback_answer(self, monkeypatch):
         monkeypatch.setattr(
-            sm.llm, "is_general_question",
+            sm.llm, "classify_global_intent",
             MagicMock(return_value="GENERAL_QUESTION"),
         )
         monkeypatch.setattr(

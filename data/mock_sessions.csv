@@ -1,2 +1,13 @@
-phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,conversation_summary,pending_quick_date,service_city_question_mode
-918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,,,START,OWNER,,,,,,,,,,
+phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,conversation_summary,pending_quick_date,service_city_question_mode,engineer_name,engineer_phone
+918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,Nagpur,,COMPLETED,OWNER,,Punjab Bagh,UNKNOWN,,Sarvesh Swami,8290323758,2026-07-21,,TKT-F3284FB6,ENG005,,,,07:50 PM,,,"Namaste!
+
+Vehicle MH16EF9012 se GPS data receive nahi ho raha hai.
+
+📍 Last Location: Nagpur
+
+🕒 Last Update: 21 June 2026 09:30
+
+Vehicle ki current status batayein.","BOT: Namaste! Vehicle MH16EF9012 se GPS data receive nahi ho raha hai. 📍 Last Location: Nagpur 🕒 Last Update: 21 June 2026 09:30 Vehicle ki current status batayein.
+USER: My GPS is not working. Could you please send a technician to Punjab Bagh?
+BOT: Booking Summary 📍 Current Location: Nagpur 📍 Service Location: Punjab Bagh 📅 Date: 2026-07-21 🕒 Time: 07:50 PM 👤 Driver: Sarvesh Swami 📞 8290323758
+BOT: ✅ Ticket create ho gaya. 🆔 Ticket ID: TKT-F3284FB6 Aapki request record ho gayi hai. Hamari team aapko zarurat par contact karegi. Dhanyavaad!",,,Rahul Deshmukh,919000000005

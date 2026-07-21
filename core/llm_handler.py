@@ -55,7 +55,12 @@ def _call_bedrock(user_prompt: str) -> str:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            "max_tokens": 200,
+            # gpt-oss reasoning models spend part of this budget on hidden
+            # reasoning tokens before the visible JSON — 200 was too low
+            # and silently truncated mid-object on longer instructions
+            # (e.g. extract_tech_dispatch_slots), making json.loads() fail
+            # and falling back to the crude heuristic extractor.
+            "max_tokens": 800,
             "temperature": 0,
         },
         timeout=60,
@@ -103,7 +108,7 @@ def _call_anthropic(user_prompt: str) -> str:
 
     response = client.messages.create(
         model=settings.ANTHROPIC_MODEL,
-        max_tokens=200,
+        max_tokens=800,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -358,20 +363,26 @@ def _heuristic_extract_tech_dispatch_slots(user_message: str) -> dict:
     if not text:
         return {"service_location": "", "service_date": "", "service_time_window": "", "contact_person": "", "contact_number": ""}
 
+    # Only isolate a location when one of these English markers is actually
+    # present — this heuristic only understands "send tech at/to/on/for X"
+    # phrasing. Without a marker there's no reliable way to tell where the
+    # location starts, so it must stay empty (letting ASK_DIRECT_TECH_LOCATION
+    # ask directly) rather than guessing the whole message is the location.
     lowered = text.lower()
-    location_candidate = text
+    location_candidate = ""
     for marker in [" at ", " on ", " for ", " to "]:
         if marker in lowered:
             location_candidate = text.split(marker, 1)[1]
             break
 
-    time_match = re.search(r"\b(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?\b", location_candidate, re.I)
-    if time_match:
-        location_candidate = location_candidate[:time_match.start()].strip()
+    if location_candidate:
+        time_match = re.search(r"\b(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?\b", location_candidate, re.I)
+        if time_match:
+            location_candidate = location_candidate[:time_match.start()].strip()
 
-    location_candidate = re.sub(r"^(send|tech|technician|engineer|please|plz|kindly)\b", "", location_candidate, flags=re.I)
-    location_candidate = re.sub(r"^(by|at|on|for|to)\b", "", location_candidate, flags=re.I)
-    location_candidate = location_candidate.strip(" ,;:-")
+        location_candidate = re.sub(r"^(send|tech|technician|engineer|please|plz|kindly)\b", "", location_candidate, flags=re.I)
+        location_candidate = re.sub(r"^(by|at|on|for|to)\b", "", location_candidate, flags=re.I)
+        location_candidate = location_candidate.strip(" ,;:-")
 
     service_location = location_candidate if len(location_candidate) > 1 else ""
 
@@ -398,15 +409,20 @@ def _heuristic_extract_tech_dispatch_slots(user_message: str) -> dict:
 
 
 def extract_tech_dispatch_slots(user_message: str, conversation_context: str = "") -> dict:
+    today = date.today().isoformat()
     result = extract_structured(
         "DIRECT_TECH_REQUEST",
+        "CURRENT_DATE: " + today + "\n"
         "The user wants a technician, engineer, or tech sent directly. "
         "Extract whichever of these are actually present in USER_MESSAGE: "
         "service location where the technician should go, preferred service "
         "date, preferred service time window, contact person's name, and/or "
         "contact phone number. If a location is mentioned, treat it as the "
-        "service location. Leave anything not mentioned as an empty string. "
-        "Do not guess. Return JSON with exactly these keys: "
+        "service location. If a date is mentioned (including relative terms "
+        "like 'aj'/'aaj'/today, 'kal'/tomorrow, 'parso'), resolve it to "
+        "YYYY-MM-DD based on CURRENT_DATE. Leave anything not mentioned as "
+        "an empty string. Do not guess. Return JSON with exactly these "
+        "keys: "
         '{"service_location": "", "service_date": "", '
         '"service_time_window": "", "contact_person": "", '
         '"contact_number": ""}',
@@ -495,6 +511,59 @@ def is_driver_update_intent(user_message: str, conversation_context: str = "") -
         conversation_context,
     )
     return result.get("value", "").upper() == "YES"
+
+
+def classify_global_intent(current_state: str, user_message: str, conversation_context: str = "") -> str:
+    """
+    Consolidated top-level router — replaces what used to be three separate,
+    independently-called LLM classifiers (is_driver_update_intent,
+    is_general_question, classify_ticket_inquiry), each firing on every
+    single incoming message regardless of state. Checked once per turn in
+    state_machine.process_message(), BEFORE the current state's own handler
+    runs, so cross-cutting intents (updating the driver, asking about an
+    existing ticket, an unrelated question) are understood the same way no
+    matter which state the conversation is in.
+
+    Downstream handlers still do their own detailed extraction from the raw
+    message (e.g. _handle_driver_update_message calls extract_name_and_phone
+    itself) — this call's only job is deciding WHICH handler should run.
+    """
+    result = extract_structured(
+        current_state,
+        "Classify USER_MESSAGE into exactly one of these top-level intents, "
+        "regardless of what CURRENT_STATE was expecting:\n"
+        "DRIVER_UPDATE — the user is providing or updating driver "
+        "information (e.g. 'driver ye hai', 'naya driver Ramesh "
+        "9876543210', a name followed by a phone number in context of "
+        "the driver).\n"
+        "TICKET_INQUIRY — asking about the status or details of an "
+        "existing complaint/service ticket (e.g. 'kya meri koi complaint "
+        "register hai', 'iski details batao', 'ticket ka status kya "
+        "hai'). Do NOT use this if they're instead asking when the "
+        "engineer/technician will personally arrive/call — that's a "
+        "different, separately-handled question.\n"
+        "DIRECT_TECH_DISPATCH — the user wants a technician/engineer/person "
+        "sent out now to physically handle the vehicle, in any phrasing "
+        "('send your person', 'ladka bhej do', 'koi bhejo', 'bandaa bhej "
+        "dena', 'send someone to fix this'), whether or not they also state "
+        "a location. Do NOT use this for a plain status update with no "
+        "request to dispatch anyone (that's FLOW_REPLY) or a question about "
+        "an existing ticket (that's TICKET_INQUIRY).\n"
+        "GENERAL_QUESTION — an unrelated question about the service/"
+        "company (working hours, how GPS tracking works, pricing, etc.) "
+        "that has nothing to do with continuing the current step.\n"
+        "FLOW_REPLY — none of the above; a normal reply to whatever "
+        "CURRENT_STATE was asking for.\n"
+        "When in doubt, prefer FLOW_REPLY so the ongoing flow isn't "
+        "interrupted unnecessarily. "
+        "Return {\"value\": \"<one of these>\"}.",
+        user_message,
+        conversation_context,
+    )
+    # `or` (not .get's default) so a real LLM failure — which comes back as
+    # {"value": "", ...} from extract_structured, not a missing key — also
+    # safely falls back to FLOW_REPLY instead of an empty string.
+    return (result.get("value") or "FLOW_REPLY").upper()
 
 
 _NO_ANSWER_FALLBACK = "Iska jawab abhi available nahi hai, hum team se check karke aapko batayenge."

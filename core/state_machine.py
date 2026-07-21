@@ -135,10 +135,16 @@ def _is_driver_change_request(message: str) -> bool:
         text,
     ))
     
+_TECH_DISPATCH_SUBJECT = r"(?:tech|technician|engineer|ladka|banda|aadmi|admi|koi)"
+_TECH_DISPATCH_VERB = r"bhej\s*(?:o|do|de|d|wao|dena|dijiye)\b"
+
+
 def _is_direct_tech_request(message: str) -> bool:
+    # "front se tech bhejo" etc. are already caught as a substring of the
+    # {subject} {verb} pattern below, so no separate "front se" branch needed.
     text = message.strip().lower()
     return bool(re.search(
-        r"\b(send\s+(tech|technician|engineer)|send\s+engineer|send\s+technician|tech\s+bhejo|technician\s+bhejo|engineer\s+bhejo|front\s+se\s+(tech|technician|engineer)\s+bhejo|front\s+se\s+tech|front\s+se\s+technician|front\s+se\s+engineer)\b",
+        rf"\bsend\s+(?:tech|technician|engineer)\b|\b{_TECH_DISPATCH_SUBJECT}\s+{_TECH_DISPATCH_VERB}",
         text,
     ))
 
@@ -231,34 +237,31 @@ def _apply_direct_tech_slots(session: dict, slots: dict) -> None:
         if inferred_location:
             session["current_location"] = inferred_location
 
+def _default_dispatch_time_window() -> str:
+    """'Now + 2 hours', formatted the same way _normalize_tech_time_window
+    does (e.g. '05:00 PM') — used when a direct dispatch request doesn't
+    name a time, so the ticket still carries a real, actionable window
+    instead of blocking on a question."""
+    target = datetime.now() + timedelta(hours=2)
+    display_hour = target.hour % 12 or 12
+    suffix = "PM" if target.hour >= 12 else "AM"
+    return f"{display_hour:02d}:{target.minute:02d} {suffix}"
+
+
 def _next_missing_direct_tech_state(session: dict) -> str:
+    """
+    A direct "send someone now" request only ever blocks on location —
+    it can't be guessed. Everything else (date, time window, contact) is
+    auto-defaulted in _handle_direct_tech_request so this flow never asks
+    a follow-up question.
+    """
     if not session.get("extracted_service_location"):
         return "ASK_DIRECT_TECH_LOCATION"
-    if not session.get("service_date"):
-        return "ASK_SERVICE_DATE"
-    if not session.get("service_time_window"):
-        return "ASK_SERVICE_TIME_WINDOW"
-    if session.get("driver_name") and session.get("driver_phone"):
-        return ""
-    if not session.get("contact_person"):
-        return "ASK_CONTACT_PERSON"
-    if not session.get("contact_number"):
-        return "ASK_CONTACT_NUMBER"
     return ""
 
 def _prompt_for_direct_tech_state(session: dict, state: str) -> str:
     if state == "ASK_DIRECT_TECH_LOCATION":
         return _direct_tech_location_prompt()
-    if state == "ASK_SERVICE_DATE":
-        prompt_text, implied_date = get_service_date_prompt_and_date()
-        session["pending_quick_date"] = implied_date
-        return prompt_text
-    if state == "ASK_SERVICE_TIME_WINDOW":
-        return render("ASK_SERVICE_TIME_WINDOW")
-    if state == "ASK_CONTACT_PERSON":
-        return render("ASK_CONTACT_PERSON")
-    if state == "ASK_CONTACT_NUMBER":
-        return render("ASK_CONTACT_NUMBER")
     return render("ASK_CONTACT_PERSON")
 
 def _handle_direct_tech_request(session: dict, message: str, sender_phone: str):
@@ -270,6 +273,11 @@ def _handle_direct_tech_request(session: dict, message: str, sender_phone: str):
     if next_state:
         session["current_state"] = next_state
         return session, [_msg(sender_phone, _prompt_for_direct_tech_state(session, next_state))]
+
+    if not session.get("service_date"):
+        session["service_date"] = add_days_to_today(0)
+    if not session.get("service_time_window"):
+        session["service_time_window"] = _default_dispatch_time_window()
 
     if not session.get("current_location"):
         session["current_location"] = session.get("last_location") or session.get("extracted_service_location") or ""
@@ -1443,21 +1451,28 @@ def process_message(session: dict, message: str, sender_phone: str):
     Returns (updated_session, outbound_messages).
     """
     state = session.get("current_state") or "START"
+    is_payload = bool(_normalize_payload(message))
 
+    ticket_id_in_message = _extract_ticket_id(message)
+    if ticket_id_in_message:
+        # An explicit ticket ID is an unambiguous, cheap regex parse — no
+        # need to spend an LLM call figuring out what's already obvious.
+        return _handle_ticket_inquiry(session, message, sender_phone, ticket_id_in_message)
+
+    # Cheap, already-reliable deterministic checks run before spending an
+    # LLM call on anything.
     if _is_driver_change_request(message):
         return _handle_driver_change_request(session, sender_phone)
 
-    if llm.is_driver_update_intent(message, build_conversation_context(session)):
-        return _handle_driver_update_message(session, message, sender_phone)
-
-    if state in {"ASK_DIRECT_TECH_LOCATION", "ASK_SERVICE_DATE", "ASK_SERVICE_TIME_WINDOW", "ASK_CONTACT_PERSON", "ASK_CONTACT_NUMBER"}:
-        if state == "ASK_CONTACT_PERSON" and ("driver" in message.strip().lower() and session.get("driver_name")):
-            return handle_ask_contact_person(session, message, sender_phone)
-        if state in {"ASK_DIRECT_TECH_LOCATION", "ASK_SERVICE_DATE", "ASK_SERVICE_TIME_WINDOW", "ASK_CONTACT_PERSON", "ASK_CONTACT_NUMBER"}:
-            return _handle_direct_tech_request(session, message, sender_phone)
-    
     if state == "ASK_DIRECT_TECH_LOCATION" or _is_direct_tech_request(message):
         return _handle_direct_tech_request(session, message, sender_phone)
+
+    # "driver se" while picking a contact person means "use the driver as
+    # the contact" — must be handled here before the generic driver-handoff
+    # check below, which would otherwise treat it as a request to hand the
+    # whole conversation off to the driver.
+    if state == "ASK_CONTACT_PERSON" and "driver" in message.strip().lower() and session.get("driver_name"):
+        return handle_ask_contact_person(session, message, sender_phone)
 
     if (
         session.get("handler", "OWNER") == "OWNER"
@@ -1466,22 +1481,25 @@ def process_message(session: dict, message: str, sender_phone: str):
     ):
         return _start_driver_handoff(session, sender_phone)
 
-    is_payload = bool(_normalize_payload(message))
+    # One consolidated call replaces what used to be three separate LLM
+    # classifiers (is_driver_update_intent, is_general_question,
+    # classify_ticket_inquiry), each independently invoked on every message
+    # regardless of state — only reached once none of the cheap checks
+    # above already resolved the message.
+    global_intent = "FLOW_REPLY"
+    if message.strip() and not is_payload:
+        global_intent = llm.classify_global_intent(state, message, build_conversation_context(session))
 
-    ticket_id_in_message = _extract_ticket_id(message)
-    if ticket_id_in_message or (
-        session.get("ticket_id")
-        and message.strip()
-        and not is_payload
-        and llm.classify_ticket_inquiry(state, message, build_conversation_context(session)) == "TICKET_INQUIRY"
-    ):
-        return _handle_ticket_inquiry(session, message, sender_phone, ticket_id_in_message)
+    if global_intent == "DRIVER_UPDATE":
+        return _handle_driver_update_message(session, message, sender_phone)
 
-    if (
-        message.strip()
-        and not is_payload
-        and llm.is_general_question(state, message, build_conversation_context(session)) == "GENERAL_QUESTION"
-    ):
+    if global_intent == "TICKET_INQUIRY":
+        return _handle_ticket_inquiry(session, message, sender_phone, "")
+
+    if global_intent == "DIRECT_TECH_DISPATCH":
+        return _handle_direct_tech_request(session, message, sender_phone)
+
+    if global_intent == "GENERAL_QUESTION":
         return _handle_general_question(session, message, sender_phone)
 
     if (
