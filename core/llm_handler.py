@@ -209,10 +209,15 @@ def classify_vehicle_status(current_state: str, user_message: str, conversation_
     result = extract_structured(
         current_state,
         "Classify the user's message into one of: WORKSHOP, ACCIDENT, "
-        "RUNNING, GPS_DAMAGED, GPS_REMOVED, UNCLEAR. If the message says "
-        "the vehicle is bad/broken/kharaab, classify as WORKSHOP if it refers "
-        "to the vehicle being unusable and as GPS_DAMAGED if it explicitly "
-        "mentions GPS/device/tracker being broken, damaged, or removed. "
+        "RUNNING, GPS_DAMAGED, GPS_REMOVED, DEFER_UNKNOWN, UNCLEAR. If the "
+        "message says the vehicle is bad/broken/kharaab, classify as WORKSHOP "
+        "if it refers to the vehicle being unusable and as GPS_DAMAGED if it "
+        "explicitly mentions GPS/device/tracker being broken, damaged, or "
+        "removed. Classify as DEFER_UNKNOWN if the user does not currently "
+        "know the vehicle's status/location and says they will inform or "
+        "update once they find out (e.g. 'pata nahi kaha hai', 'jab aayegi "
+        "tab bata denge', 'baad mein confirm karunga') without giving any "
+        "of the other clear statuses. "
         "Return {\"value\": \"<one of these>\"}.",
         user_message,
         conversation_context,

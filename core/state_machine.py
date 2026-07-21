@@ -577,6 +577,18 @@ def _create_and_confirm_ticket_directly(session: dict, sender_phone: str):
     return session, outbound
 
 
+def _defer_and_close(session, message, sender_phone, conversation_context, template_key):
+    """Extract a date the user gave (or default to tomorrow), save it, and close the conversation."""
+    expected_date = _extract_date_hinglish(session["current_state"], message, conversation_context)
+    if not expected_date:
+        expected_date = add_days_to_today(1)
+
+    session["extracted_appointment_date"] = expected_date
+    session["service_date"] = expected_date
+    session["current_state"] = "COMPLETED"
+    return session, [_msg(sender_phone, render(template_key, date=expected_date))]
+
+
 def handle_ask_vehicle_status(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
     payload = _normalize_payload(message)
@@ -619,27 +631,27 @@ def handle_ask_vehicle_status(session, message, sender_phone):
         # Check if vehicle is on the way and will inform later
         raw = message.lower()
         if any(keyword in raw for keyword in ["on the way", "aayegi", "aayga", "jab aay", "inform", "bataaunga", "bataunga", "chal raha", "chal rahi", "aayega", "aa jayega"]):
-            # Extract expected date or default to tomorrow
-            expected_date = _extract_date_hinglish(session["current_state"], message, conversation_context)
-            if not expected_date:
-                # Default to tomorrow if no date provided
-                expected_date = add_days_to_today(1)
-            
-            session["vehicle_state"] = status
-            session["extracted_appointment_date"] = expected_date
-            session["service_date"] = expected_date
-            session["current_state"] = "COMPLETED"
-            return session, [_msg(sender_phone, render("GPS_DAMAGED_ON_THE_WAY"))]
-        
+            return _defer_and_close(session, message, sender_phone, conversation_context, "GPS_DAMAGED_ON_THE_WAY")
+
         # Normal GPS repair flow if vehicle is not on the way
         session["vehicle_state"] = status
         session["current_state"] = "ASK_GPS_REPAIR_CONFIRMATION"
         return session, [_button_message(sender_phone, render("ASK_GPS_REPAIR_CONFIRMATION"), [("PAYLOAD_YES", "Haan"), ("PAYLOAD_NO", "Nahi")])]
 
+    if status == "DEFER_UNKNOWN":
+        return _defer_and_close(session, message, sender_phone, conversation_context, "DEFER_UNKNOWN_ACK")
+
     if status in ("RUNNING", "GPS_REMOVED"):
         fast_result = _handle_booking_bulk_extraction(session, message, sender_phone)
         if fast_result is not None:
             return fast_result
+
+        if session.get("destination_location"):
+            # Destination was already captured from an earlier message — don't re-ask it.
+            session["current_state"] = "ASK_SERVICE_DATE"
+            prompt_text, implied_date = get_service_date_prompt_and_date()
+            session["pending_quick_date"] = implied_date
+            return session, [_msg(sender_phone, prompt_text)]
 
         session["current_state"] = "ASK_DESTINATION_LOCATION"
         return session, [_msg(sender_phone, render("ASK_DESTINATION_LOCATION"))]
@@ -1116,13 +1128,12 @@ def handle_completed(session, message, sender_phone):
             response = "Booking details update ho gayi. Aapko zarurat par contact karenge. Dhanyavaad!"
             return session, [_msg(sender_phone, response)]
 
-    # Only show GPS error if no ticket has been created yet
+    # No ticket yet — try to read a vehicle status directly out of this
+    # message (reusing the same classification/branching as the initial
+    # question) instead of discarding it and re-asking from scratch.
     if not session.get("ticket_id"):
         session["current_state"] = "ASK_VEHICLE_STATUS"
-        return session, [
-            _msg(sender_phone, render("ASK_VEHICLE_STATUS_AFTER_CLOSE")),
-            _vehicle_status_options_message(sender_phone),
-        ]
+        return handle_ask_vehicle_status(session, message, sender_phone)
     
     # Ticket exists but message doesn't match any pattern - acknowledge and confirm booking
     return session, [_msg(sender_phone, f"Aapka booking confirm hai.\n\nTicket ID: {session.get('ticket_id', '')}\n\nAur kuch madad chahiye toh batayein.")]

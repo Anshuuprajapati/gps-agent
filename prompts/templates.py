@@ -95,6 +95,7 @@ T = {
     "ASK_EXPECTED_DATE_ACCIDENT": "Vehicle kab tak running mein aa jayegi?",
     "SAVE_DATE_CLOSE": "✅ Thik hai. Humne {date} note kar liya hai.\n\nJab vehicle running mein aa jaye, hume message kar dijiye. Main aapki madad yahin continue karunga.\n\nDhanyavaad!",
     "GPS_DAMAGED_ON_THE_WAY": "Thik hai. Jab gaadi aa jaye tab inform kare.",
+    "DEFER_UNKNOWN_ACK": "Thik hai, koi baat nahi. Jaise hi vehicle ka status ya location pata chale, hume turant bata dijiye.",
 
     "ASK_CURRENT_LOCATION": "Vehicle abhi kis location par hai?",
     "ASK_DESTINATION_LOCATION": "Vehicle kis jagah jaa rahi hai?",
