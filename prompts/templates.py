@@ -159,6 +159,7 @@ T = {
     ),
     "TICKET_NOT_FOUND": "Ticket ID {ticket_id} nahi mila. Kripya sahi ticket ID check karke bhejein.",
     "TICKET_NOT_FOUND_NO_ID": "Aapka koi active ticket nahi mila. Agar aapke paas ticket ID hai toh kripya bhejein.",
+    "GENERIC_ACK": "Thik hai. Aur kuch madad chahiye toh batayein.",
 
     "FALLBACK": "samajh nahi paaya.",
 }

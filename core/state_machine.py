@@ -106,6 +106,20 @@ def _extract_ticket_id(message: str) -> str:
     return match.group(0).upper() if match else ""
 
 
+def _is_generic_acknowledgment(message: str) -> bool:
+    """
+    A bare filler like "ok" / "thik hai" / "thanks" — not an answer to
+    whatever's pending, just closing out the last reply. Matched as a
+    full-message pattern (not a substring search) so it never fires on a
+    real answer that happens to start with "ok" (e.g. "ok workshop me hai").
+    """
+    text = message.strip().lower()
+    return bool(re.fullmatch(
+        r"(ok|okay|k|kk|thik hai|theek hai|thanks|thank you|dhanyavaad|achha|acha|hmm+|alright)[.!]*",
+        text,
+    ))
+
+
 def _is_driver_request(message: str) -> bool:
     text = message.strip().lower()
     return bool(re.search(
@@ -600,6 +614,12 @@ def _defer_and_close(session, message, sender_phone, conversation_context, templ
 def handle_ask_vehicle_status(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
     payload = _normalize_payload(message)
+
+    if not payload and _is_generic_acknowledgment(message):
+        # A bare "ok"/"thanks" isn't an answer — don't burn an LLM call or
+        # re-dump the full status menu; just ack and keep waiting.
+        return session, [_msg(sender_phone, render("GENERIC_ACK"))]
+
     if payload == "PAYLOAD_WORKSHOP":
         status = "WORKSHOP"
     elif payload == "PAYLOAD_ACCIDENT":
@@ -1243,10 +1263,14 @@ def _handle_general_question(session, message, sender_phone):
     Answers an off-topic question (working hours, how GPS tracking works,
     pricing, etc.) from the knowledge base, then hands the conversation
     back to wherever it left off — current_state is never changed here,
-    and we replay the pending question so the flow isn't lost.
+    and we replay the pending question so the flow isn't lost. Only the
+    last line is replayed (not the whole stored prompt) since some prompts
+    — like the initial multi-paragraph GPS alert — are more than just the
+    actual question.
     """
     answer = llm.answer_from_knowledge_base(message)
-    pending = session.get("last_prompt_text", "")
+    pending_lines = [line for line in session.get("last_prompt_text", "").splitlines() if line.strip()]
+    pending = pending_lines[-1] if pending_lines else ""
 
     if pending:
         reply = f"{answer}\n\nChaliye, wapas apne case par aate hain — {pending}"
