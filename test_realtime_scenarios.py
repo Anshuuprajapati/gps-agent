@@ -174,7 +174,7 @@ def default_llm_guards(monkeypatch):
         "classify_vehicle_status", "extract_date", "extract_time",
         "extract_free_text", "extract_name_and_phone", "extract_booking_slots",
         "extract_tech_dispatch_slots",
-        "answer_from_knowledge_base", "is_general_question",
+        "answer_from_knowledge_base", "is_general_question", "classify_ticket_inquiry",
     ):
         monkeypatch.setattr(sm.llm, fn, _boom, raising=False)
 
@@ -183,6 +183,14 @@ def default_llm_guards(monkeypatch):
     monkeypatch.setattr(
         sm.llm, "is_general_question",
         MagicMock(return_value="FLOW_REPLY"),
+        raising=False,
+    )
+    # Same default for the ticket-status-inquiry check (runs whenever the
+    # session already has a ticket_id) — tests exercising that path
+    # override this themselves.
+    monkeypatch.setattr(
+        sm.llm, "classify_ticket_inquiry",
+        MagicMock(return_value="OTHER"),
         raising=False,
     )
     yield

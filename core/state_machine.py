@@ -98,6 +98,14 @@ def _looks_like_vehicle_issue(message: str) -> bool:
     return has_vehicle_terms and has_problem_terms and not has_gps_terms
 
 
+_TICKET_ID_RE = re.compile(r"\bTKT-[A-F0-9]{6,}\b", re.IGNORECASE)
+
+
+def _extract_ticket_id(message: str) -> str:
+    match = _TICKET_ID_RE.search(message or "")
+    return match.group(0).upper() if match else ""
+
+
 def _is_driver_request(message: str) -> bool:
     text = message.strip().lower()
     return bool(re.search(
@@ -1201,6 +1209,35 @@ def _reply_text_for(outbound: list[dict], sender_phone: str) -> str:
     return ""
 
 
+def _handle_ticket_inquiry(session, message, sender_phone, ticket_id_in_message):
+    """
+    Answers a "what's my complaint status / give me the details" question
+    with the real row from tickets.csv instead of the generic booking-
+    confirmed fallback. If the message named a specific ticket ID that's
+    looked up directly (it may not even be this session's own ticket);
+    otherwise falls back to whatever ticket is already on this session.
+    """
+    ticket_id = ticket_id_in_message or session.get("ticket_id", "")
+    if not ticket_id:
+        return session, [_msg(sender_phone, render("TICKET_NOT_FOUND_NO_ID"))]
+
+    ticket = ticket_service.get_ticket_by_id(ticket_id)
+    if not ticket:
+        return session, [_msg(sender_phone, render("TICKET_NOT_FOUND", ticket_id=ticket_id))]
+
+    return session, [_msg(sender_phone, render(
+        "TICKET_DETAILS",
+        ticket_id=ticket.get("ticket_id", ""),
+        status=ticket.get("status", ""),
+        vehicle_no=ticket.get("vehicle_no", ""),
+        service_location=ticket.get("service_location", ""),
+        service_date=ticket.get("service_date", ""),
+        service_time=ticket.get("service_time", ""),
+        engineer_name=ticket.get("engineer_name") or "Assign hone wale hain",
+        engineer_phone=ticket.get("engineer_phone", ""),
+    ))]
+
+
 def _handle_general_question(session, message, sender_phone):
     """
     Answers an off-topic question (working hours, how GPS tracking works,
@@ -1406,6 +1443,16 @@ def process_message(session: dict, message: str, sender_phone: str):
         return _start_driver_handoff(session, sender_phone)
 
     is_payload = bool(_normalize_payload(message))
+
+    ticket_id_in_message = _extract_ticket_id(message)
+    if ticket_id_in_message or (
+        session.get("ticket_id")
+        and message.strip()
+        and not is_payload
+        and llm.classify_ticket_inquiry(state, message, build_conversation_context(session)) == "TICKET_INQUIRY"
+    ):
+        return _handle_ticket_inquiry(session, message, sender_phone, ticket_id_in_message)
+
     if (
         message.strip()
         and not is_payload

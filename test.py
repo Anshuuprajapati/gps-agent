@@ -92,6 +92,11 @@ def no_real_llm(monkeypatch):
     # every existing test mock it — tests that specifically exercise the
     # knowledge-base path override this per-test.
     monkeypatch.setattr(sm.llm, "is_general_question", MagicMock(return_value="FLOW_REPLY"), raising=True)
+
+    # classify_ticket_inquiry runs on every process_message() call whenever
+    # the session already has a ticket_id, so default it the same way —
+    # tests exercising the ticket-status path override this per-test.
+    monkeypatch.setattr(sm.llm, "classify_ticket_inquiry", MagicMock(return_value="OTHER"), raising=True)
     yield
 
 

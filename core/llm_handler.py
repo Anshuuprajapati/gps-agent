@@ -453,6 +453,31 @@ def is_general_question(current_state: str, user_message: str, conversation_cont
     return result.get("value", "FLOW_REPLY").upper()
 
 
+def classify_ticket_inquiry(current_state: str, user_message: str, conversation_context: str = "") -> str:
+    """
+    Detects the user asking about the status/details of a complaint or
+    ticket they already have — phrasing varies too much for a keyword
+    list ("kya meri koi complaint register hai", "iski details batao",
+    "mera ticket ka status kya hai"). Deliberately distinct from asking
+    when the engineer/technician will personally arrive — that stays a
+    separate flow (see _is_engineer_inquiry in state_machine.py).
+    """
+    result = extract_structured(
+        current_state,
+        "Classify whether the user is asking about the status or details "
+        "of an existing complaint/service ticket (e.g. 'kya meri koi "
+        "complaint register hai', 'iski details batao', 'ticket ka status "
+        "kya hai', 'meri complaint ka kya hua'). Do NOT classify as this "
+        "if they're instead asking when the engineer/technician will "
+        "personally arrive/call — that's a different question. "
+        "Return {\"value\": \"TICKET_INQUIRY\"} if it matches, else "
+        "{\"value\": \"OTHER\"}.",
+        user_message,
+        conversation_context,
+    )
+    return result.get("value", "OTHER").upper()
+
+
 def is_driver_update_intent(user_message: str, conversation_context: str = "") -> bool:
     """
     Uses LLM to detect if the user is trying to update/change driver information.

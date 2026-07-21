@@ -47,6 +47,21 @@ def _find_existing_ticket(vehicle_no: str) -> dict | None:
     return ticket
 
 
+def get_ticket_by_id(ticket_id: str) -> dict | None:
+    ticket_id = str(ticket_id or "").strip().upper()
+    if not ticket_id:
+        return None
+
+    with FileLock(settings.TICKETS_CSV + ".lock"):
+        df = _load_tickets_df()
+
+    match = df[df["ticket_id"].str.strip().str.upper() == ticket_id]
+    if match.empty:
+        return None
+
+    return match.iloc[-1].to_dict()
+
+
 def create_ticket(session: dict) -> dict:
     _ensure_file()
 

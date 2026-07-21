@@ -148,6 +148,18 @@ T = {
     ),
     "BOOKING_REDO": "Thik hai, kripya sahi detail dobara bhejein (location/date/time/contact).",
 
+    "TICKET_DETAILS": (
+        "🎫 Ticket ID: {ticket_id}\n"
+        "Status: {status}\n"
+        "Vehicle: {vehicle_no}\n"
+        "Service Location: {service_location}\n"
+        "Service Date: {service_date} {service_time}\n"
+        "Engineer: {engineer_name} ({engineer_phone})\n\n"
+        "Aur kuch madad chahiye toh batayein."
+    ),
+    "TICKET_NOT_FOUND": "Ticket ID {ticket_id} nahi mila. Kripya sahi ticket ID check karke bhejein.",
+    "TICKET_NOT_FOUND_NO_ID": "Aapka koi active ticket nahi mila. Agar aapke paas ticket ID hai toh kripya bhejein.",
+
     "FALLBACK": "samajh nahi paaya.",
 }
 
