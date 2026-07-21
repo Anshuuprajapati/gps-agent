@@ -42,6 +42,7 @@ from starlette.concurrency import run_in_threadpool
 from config import settings
 from core import session_manager
 from core import state_machine
+from core import router as engine_router
 from whatsapp.sender import send_message
 
 router = APIRouter()
@@ -120,7 +121,7 @@ def _process_incoming_message(payload: dict) -> dict:
             send_message(sender_phone, "Aapka koi active case nahi mila. Kripya support se contact karein.")
             return {"status": "no_session"}
 
-        updated_session, outbound_messages = state_machine.process_message(session, text, sender_phone)
+        updated_session, outbound_messages = engine_router.process_message(session, text, sender_phone)
         if updated_session is not session:
             session.clear()
             session.update(updated_session)
@@ -164,7 +165,7 @@ async def trigger_outage(vehicle_no: str):
         raise HTTPException(status_code=400, detail=f"Session is already at state {session.get('current_state')}, not START")
 
     owner_phone = session["phone_number"]
-    updated_session, outbound_messages = state_machine.process_message(session, "", owner_phone)
+    updated_session, outbound_messages = engine_router.process_message(session, "", owner_phone)
     state_machine.record_conversation_turn(updated_session, "", outbound_messages)
     session_manager.update_session(updated_session)
 

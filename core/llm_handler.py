@@ -566,6 +566,60 @@ def classify_global_intent(current_state: str, user_message: str, conversation_c
     return (result.get("value") or "FLOW_REPLY").upper()
 
 
+_ASK_FOR_FALLBACK = {"tool_name": "ask_for", "tool_args": {}}
+
+
+def decide_next_action(current_state: str, session_snapshot: str, user_message: str, conversation_context: str = "") -> dict:
+    """
+    The v2 tool-calling engine's single per-turn reasoning call (see
+    core/agent_engine.py). Returns {"tool_name": ..., "tool_args": {...}}
+    picked from the fixed menu described in core/tools.py — this call only
+    decides WHICH backend action to take next; the action itself always
+    runs through the existing, deterministic service-layer functions, and
+    core/tools.py validates the result before anything executes.
+
+    Same "ask for one JSON object, validate in Python" pattern as
+    classify_global_intent, just a richer schema (tool_name + tool_args
+    instead of a bare enum value) — deliberately not using any provider's
+    native tool-calling API, since support for that is uneven/unproven
+    across the 4 configured providers here. On total failure, falls back
+    to the safest possible choice — ask_for — so the engine can never
+    crash or silently stall on a turn.
+    """
+    context_prefix = f"CONVERSATION_CONTEXT:\n{conversation_context}\n\n" if conversation_context.strip() else ""
+    prompt = (
+        f"{context_prefix}"
+        f"CURRENT_STATE: {current_state}\n"
+        f"KNOWN_SO_FAR:\n{session_snapshot}\n\n"
+        "Pick exactly ONE tool from this menu for USER_MESSAGE:\n"
+        "ask_for — nothing useful in USER_MESSAGE for what's still missing; just ask for the next needed detail.\n"
+        "answer_question — USER_MESSAGE is an unrelated question about the service/company, not progress on the case.\n"
+        "ticket_inquiry — asking about the status/details of an existing ticket. tool_args: {\"ticket_id\": \"\"} (blank if none given).\n"
+        "transfer_to_driver — user wants to hand the conversation off to their driver.\n"
+        "dispatch_technician — user wants a technician sent out NOW, any phrasing of 'send someone'. tool_args: {\"service_location\": \"\"} if a location was given.\n"
+        "create_ticket — every required booking detail is already known and the user just confirmed/is ready to book.\n"
+        "update_ticket_status — user reports progress on an EXISTING ticket (e.g. work has started). tool_args: {\"new_status\": \"IN_PROGRESS\"|\"RESOLVED\", \"note\": \"\"}.\n"
+        "close_ticket — user says the issue is resolved / no longer needed. tool_args: {\"note\": \"\"}.\n"
+        "escalate — user is asking for a supervisor/manager, or nothing else fits. tool_args: {\"reason\": \"\"}.\n"
+        "no_op — USER_MESSAGE is just a filler acknowledgment (ok/thanks) with nothing to act on.\n\n"
+        f"USER_MESSAGE: \"{user_message}\"\n\n"
+        "Return ONLY {\"tool_name\": \"<one of the names above>\", \"tool_args\": {...}}."
+    )
+
+    try:
+        raw_text = _call_llm(prompt)
+        if raw_text is None:
+            return dict(_ASK_FOR_FALLBACK)
+        parsed = json.loads(_strip_json_fence(raw_text))
+        if not isinstance(parsed, dict) or not parsed.get("tool_name"):
+            return dict(_ASK_FOR_FALLBACK)
+        parsed.setdefault("tool_args", {})
+        return parsed
+    except Exception as e:
+        print(f"[llm_handler] {settings.LLM_PROVIDER} decide_next_action call failed: {e}")
+        return dict(_ASK_FOR_FALLBACK)
+
+
 _NO_ANSWER_FALLBACK = "Iska jawab abhi available nahi hai, hum team se check karke aapko batayenge."
 
 _kb_cache = {"text": None}

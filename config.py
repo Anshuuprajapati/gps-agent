@@ -70,5 +70,12 @@ class Settings:
     # Server
     PORT = int(os.getenv("PORT", "8000"))
 
+    # v2 tool-calling engine rollout (core/router.py). A session is pinned
+    # to whichever engine it first gets routed through, so this only
+    # affects BRAND NEW sessions — "" keeps them on the legacy state
+    # machine, "v2" opts new sessions into the new engine. Existing
+    # in-flight sessions are unaffected either way.
+    AGENT_ENGINE_DEFAULT_FOR_NEW = os.getenv("AGENT_ENGINE_DEFAULT_FOR_NEW", "")
+
 
 settings = Settings()

@@ -34,6 +34,12 @@ COLUMNS = [
     "contact_number", "ticket_id", "engineer_id", "engineer_name", "engineer_phone", "last_prompt_text",
     "conversation_summary",
     "pending_quick_date",
+    # engine_version pins a session to the legacy state machine ("") or the
+    # new tool-calling engine ("v2") the first time it's read, so a
+    # conversation never switches engines mid-flow. pending_action_json
+    # stashes a tool call awaiting yes/no confirmation across a turn
+    # boundary (v2 engine only — see core/agent_engine.py).
+    "engine_version", "pending_action_json",
 ]
 
 

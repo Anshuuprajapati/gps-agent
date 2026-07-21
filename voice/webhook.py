@@ -42,6 +42,7 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 
 from config import settings
 from core import session_manager, state_machine
+from core import router as engine_router
 from voice.caller import place_call
 from voice.speech_format import to_speech
 
@@ -197,7 +198,7 @@ def _is_low_confidence(confidence: str) -> bool:
 
 
 def _run_turn(session: dict, message: str, calling_phone: str) -> VoiceResponse:
-    updated_session, outbound_messages = state_machine.process_message(session, message, calling_phone)
+    updated_session, outbound_messages = engine_router.process_message(session, message, calling_phone)
     if updated_session is not session:
         session.clear()
         session.update(updated_session)
