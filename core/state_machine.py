@@ -467,7 +467,7 @@ def handle_driver_confirm(session, message, sender_phone):
         session["current_state"] = "ASK_NEW_DRIVER"
         return session, [_msg(sender_phone, "Thik hai, naye driver ka naam aur mobile number bhejein.")]
 
-    text = render("SHOW_DRIVER_DETAILS", driver_name=session.get("driver_name", ""), driver_phone=session.get("driver_phone", ""))
+    text = render("UNCLEAR_YES_NO_RETRY") + render("SHOW_DRIVER_DETAILS", driver_name=session.get("driver_name", ""), driver_phone=session.get("driver_phone", ""))
     return session, [_button_message(sender_phone, text, [("PAYLOAD_YES", "YES"), ("PAYLOAD_NO", "NO")])]
 
 
@@ -558,7 +558,8 @@ def handle_ask_physical_damage(session, message, sender_phone):
         return session, [_msg(sender_phone, "Thik hai, ek baar aur try kijiye. " + render(key))]
 
     damage_prompt = "ASK_PHYSICAL_DAMAGE_MAIN_POWER" if session["root_cause"] == MAIN_POWER_DISCONNECTED else "ASK_PHYSICAL_DAMAGE"
-    return session, [_button_message(sender_phone, render(damage_prompt), [("PAYLOAD_YES", "YES"), ("PAYLOAD_NO", "NO")])]
+    text = render("UNCLEAR_YES_NO_RETRY") + render(damage_prompt)
+    return session, [_button_message(sender_phone, text, [("PAYLOAD_YES", "YES"), ("PAYLOAD_NO", "NO")])]
 
 
 # ---------------------------------------------------------- ASK_VEHICLE_STATUS
@@ -617,6 +618,34 @@ def _defer_and_close(session, message, sender_phone, conversation_context, templ
     session["service_date"] = expected_date
     session["current_state"] = "COMPLETED"
     return session, [_msg(sender_phone, render(template_key, date=expected_date))]
+
+
+def _advance_after_destination_known(session: dict, sender_phone: str):
+    """
+    Once destination_location is known, city confirmation is never skipped
+    (matches _next_missing_booking_state's documented policy — booking a
+    service call to the wrong city is costly enough that it always gets an
+    explicit yes/no). Only after it's actually confirmed do we move on to
+    asking for the service date.
+
+    This was previously inlined at two call sites and both skipped straight
+    to ASK_SERVICE_DATE regardless of confirmation state — which silently
+    dropped a location correction given in the same breath as a date/time
+    reply (e.g. "nahi parso delhi me"), and left extracted_service_location
+    blank on the eventual ticket since ASK_SERVICE_CITY_CONFIRMATION — the
+    only place that sets it — never ran.
+    """
+    if not session.get("service_city_confirmed"):
+        session["service_city_confirmed"] = ""
+        session["service_city_question_mode"] = "TODAY"
+        session["current_state"] = "ASK_SERVICE_CITY_CONFIRMATION"
+        suggested_city = session.get("destination_location") or "Delhi"
+        return session, [_msg(sender_phone, render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=suggested_city))]
+
+    session["current_state"] = "ASK_SERVICE_DATE"
+    prompt_text, implied_date = get_service_date_prompt_and_date()
+    session["pending_quick_date"] = implied_date
+    return session, [_msg(sender_phone, prompt_text)]
 
 
 def handle_ask_vehicle_status(session, message, sender_phone):
@@ -682,12 +711,17 @@ def handle_ask_vehicle_status(session, message, sender_phone):
         if fast_result is not None:
             return fast_result
 
+        # Vehicle is running/on the way — telemetry already knows where it
+        # last was, and this flow never has a dedicated "where is it right
+        # now" question, so seed current_location from that (only if the
+        # message itself didn't already give a more specific one above)
+        # instead of leaving it blank on the eventual ticket.
+        if not session.get("current_location"):
+            session["current_location"] = session.get("last_location", "")
+
         if session.get("destination_location"):
             # Destination was already captured from an earlier message — don't re-ask it.
-            session["current_state"] = "ASK_SERVICE_DATE"
-            prompt_text, implied_date = get_service_date_prompt_and_date()
-            session["pending_quick_date"] = implied_date
-            return session, [_msg(sender_phone, prompt_text)]
+            return _advance_after_destination_known(session, sender_phone)
 
         session["current_state"] = "ASK_DESTINATION_LOCATION"
         return session, [_msg(sender_phone, render("ASK_DESTINATION_LOCATION"))]
@@ -700,10 +734,9 @@ def handle_ask_vehicle_status(session, message, sender_phone):
             fast_result = _handle_booking_bulk_extraction(session, message, sender_phone)
             if fast_result is not None:
                 return fast_result
-            session["current_state"] = "ASK_SERVICE_DATE"
-            prompt_text, implied_date = get_service_date_prompt_and_date()
-            session["pending_quick_date"] = implied_date
-            return session, [_msg(sender_phone, prompt_text)]
+            if not session.get("current_location"):
+                session["current_location"] = session.get("last_location", "")
+            return _advance_after_destination_known(session, sender_phone)
 
     return session, [_msg(sender_phone, render("FALLBACK") + "\n" + render("ASK_VEHICLE_STATUS"))]
 
@@ -760,13 +793,17 @@ def handle_ask_gps_repair_confirmation(session, message, sender_phone):
         session["current_state"] = "COMPLETED"
         return session, [_msg(sender_phone, "Thik hai. Agar baad mein service chahiye ho, hume message kar dijiye. Dhanyavaad!")]
 
-    return session, [_button_message(sender_phone, render("ASK_GPS_REPAIR_CONFIRMATION"), [("PAYLOAD_YES", "Haan"), ("PAYLOAD_NO", "Nahi")])]
+    text = render("UNCLEAR_YES_NO_RETRY") + render("ASK_GPS_REPAIR_CONFIRMATION")
+    return session, [_button_message(sender_phone, text, [("PAYLOAD_YES", "Haan"), ("PAYLOAD_NO", "Nahi")])]
 
 
 def handle_ask_current_location(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
     value = llm.extract_free_text(session["current_state"], message, "current location", conversation_context)
-    session["current_location"] = value or message
+    if not value:
+        text = render("UNCLEAR_EXTRACTION_RETRY", what="sirf vehicle ki current location, jaise Pune ya Nagpur") + render("ASK_CURRENT_LOCATION")
+        return session, [_msg(sender_phone, text)]
+    session["current_location"] = value
 
     if session.get("vehicle_state") != "RUNNING":
         session["destination_location"] = session.get("current_location", "")
@@ -783,7 +820,10 @@ def handle_ask_current_location(session, message, sender_phone):
 def handle_ask_destination_location(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
     value = llm.extract_free_text(session["current_state"], message, "destination location", conversation_context)
-    session["destination_location"] = value or message
+    if not value:
+        text = render("UNCLEAR_EXTRACTION_RETRY", what="sirf vehicle ki destination location, jaise Pune ya Nagpur") + render("ASK_DESTINATION_LOCATION")
+        return session, [_msg(sender_phone, text)]
+    session["destination_location"] = value
     session["service_city_confirmed"] = ""
     session["service_city_question_mode"] = "TODAY"
     session["current_state"] = "ASK_SERVICE_CITY_CONFIRMATION"
@@ -813,13 +853,17 @@ def handle_ask_service_city_confirmation(session, message, sender_phone):
         session["current_state"] = "ASK_SERVICE_CITY_PREFERENCE"
         return session, [_msg(sender_phone, render("ASK_PREFERRED_SERVICE_CITY"))]
 
-    return session, [_msg(sender_phone, render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=session.get("destination_location", "Delhi") or "Delhi"))]
+    text = render("UNCLEAR_YES_NO_RETRY") + render("ASK_SERVICE_CITY_SUGGESTION", suggested_city=session.get("destination_location", "Delhi") or "Delhi")
+    return session, [_msg(sender_phone, text)]
 
 
 def handle_ask_service_city_preference(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
     value = llm.extract_free_text(session["current_state"], message, "preferred service city", conversation_context)
-    session["extracted_service_location"] = value or message
+    if not value:
+        text = render("UNCLEAR_EXTRACTION_RETRY", what="sirf city ka naam, jaise Pune ya Delhi") + render("ASK_PREFERRED_SERVICE_CITY")
+        return session, [_msg(sender_phone, text)]
+    session["extracted_service_location"] = value
     session["service_city_confirmed"] = "FALSE"
     session["current_state"] = "ASK_SERVICE_DATE"
     session["service_date_step"] = 0
@@ -915,7 +959,7 @@ def handle_driver_contact_confirmation(session, message, sender_phone):
         session["current_state"] = "ASK_ALTERNATE_CONTACT"
         return session, [_msg(sender_phone, render("ASK_ALTERNATE_CONTACT"))]
 
-    text = render(
+    text = render("UNCLEAR_YES_NO_RETRY") + render(
         "ASK_DRIVER_CONTACT_CONFIRMATION",
         driver_name=session.get("driver_name", ""),
         driver_phone=session.get("driver_phone", ""),
@@ -968,7 +1012,11 @@ def handle_ask_contact_person(session, message, sender_phone):
         session["contact_number"] = session.get("driver_phone") or "NOT_PROVIDED"
         return _create_and_confirm_ticket_directly(session, sender_phone)
 
-    session["contact_person"] = value or message
+    if not value:
+        text = render("UNCLEAR_EXTRACTION_RETRY", what="sirf contact person ka naam") + render("ASK_CONTACT_PERSON")
+        return session, [_msg(sender_phone, text)]
+
+    session["contact_person"] = value
     session["current_state"] = "ASK_CONTACT_NUMBER"
     return session, [_msg(sender_phone, render("ASK_CONTACT_NUMBER"))]
 
@@ -1061,7 +1109,9 @@ def handle_confirm_summary(session, message, sender_phone):
             contact_number=session.get("contact_number", ""),
         ))]
 
-    return session, [_msg(sender_phone, render("FALLBACK"))]
+    summary = _build_booking_summary(session)
+    text = render("UNCLEAR_YES_NO_RETRY") + summary + "Kya yeh sahi hai? (Haan / Nahi)"
+    return session, [_msg(sender_phone, text)]
 
 
 def _extract_date_hinglish(current_state: str, message: str, conversation_context: str) -> str:

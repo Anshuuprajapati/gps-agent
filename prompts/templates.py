@@ -162,6 +162,8 @@ T = {
     "GENERIC_ACK": "Thik hai. Aur kuch madad chahiye toh batayein.",
 
     "FALLBACK": "samajh nahi paaya.",
+    "UNCLEAR_YES_NO_RETRY": "Samajh nahi paaya — kripya Haan ya Nahi mein jawab dein.\n\n",
+    "UNCLEAR_EXTRACTION_RETRY": "Samajh nahi paaya — kripya {what} bhejein.\n\n",
 }
 
 

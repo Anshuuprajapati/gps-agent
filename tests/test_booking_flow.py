@@ -400,7 +400,10 @@ def test_vehicle_status_unclear_extracts_destination_and_continues(monkeypatch):
 
     assert updated_session["destination_location"] == "Pune"
     assert updated_session["vehicle_state"] == "RUNNING"
-    assert updated_session["current_state"] == "ASK_SERVICE_DATE"
+    # City confirmation is never skipped just because a destination is known
+    # (see _next_missing_booking_state's documented policy) — only after an
+    # explicit yes/no on the service city does the flow move to the date.
+    assert updated_session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
 
 
 def test_driver_update_message_extracts_and_applies_new_driver(monkeypatch):

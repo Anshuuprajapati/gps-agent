@@ -236,10 +236,13 @@ def extract_date(current_state: str, user_message: str, conversation_context: st
         current_state,
         "CURRENT_DATE: " + today + "\n"
         "Extract a date mentioned (any format) and normalize it to "
-        "YYYY-MM-DD if possible, else return the raw text. If the user says "
-        "relative terms like 'parso' or 'day after tomorrow', compute the "
-        "actual date based on CURRENT_DATE. Return {\"value\": \"<normalized "
-        "date or raw text>\"}.",
+        "YYYY-MM-DD if possible. If the user says relative terms like "
+        "'parso' or 'day after tomorrow', compute the actual date based on "
+        "CURRENT_DATE. If the message does not actually contain a date at "
+        "all, return an EMPTY value instead of guessing or echoing back "
+        "unrelated text — the caller relies on an empty value to know it "
+        "needs to ask again. Return {\"value\": \"<normalized date, or "
+        "empty string if none was mentioned>\"}.",
         user_message,
         conversation_context,
     )
@@ -262,8 +265,16 @@ def extract_time(current_state: str, user_message: str, conversation_context: st
 def extract_free_text(current_state: str, user_message: str, what: str, conversation_context: str = "") -> str:
     result = extract_structured(
         current_state,
-        f"Extract the {what} mentioned in the message. Return "
-        f"{{\"value\": \"<extracted {what}>\"}}.",
+        f"Extract the {what} mentioned in the message, if one is actually "
+        f"present. Correct obvious spelling mistakes and normalize casing "
+        f"when you can confidently tell what real place/name was meant "
+        f"(e.g. 'nagpurr' -> 'Nagpur', 'puna' -> 'Pune', 'dilli' -> "
+        f"'Delhi'). If the message does not plausibly contain a {what} at "
+        f"all — it's unrelated chatter, a question, or gibberish — return "
+        f"an EMPTY value instead of guessing; the caller relies on an "
+        f"empty value to know it needs to ask again more clearly. Return "
+        f"{{\"value\": \"<extracted {what}, or empty string if none was "
+        f"mentioned>\"}}.",
         user_message,
         conversation_context,
     )

@@ -947,6 +947,149 @@ class TestDirectTechDispatchViaGlobalIntent:
         assert session["current_state"] == "ASK_GPS_REPAIR_CONFIRMATION"
 
 
+class TestRunningStatusNeverSkipsCityConfirmation:
+    """Regression coverage for a real transcript bug: when a RUNNING/
+    GPS_REMOVED status message already names a destination, the flow used
+    to jump straight to ASK_SERVICE_DATE, skipping the one step
+    (ASK_SERVICE_CITY_CONFIRMATION) that actually sets
+    extracted_service_location — so a location correction given alongside
+    a later date/time answer (e.g. "nahi parso delhi me") was silently
+    dropped, and the eventual ticket/summary showed a blank service
+    location. City confirmation must never be skipped just because a
+    destination is already known."""
+
+    def test_destination_known_upfront_routes_to_city_confirmation_not_date(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="RUNNING"))
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "", "destination_location": "", "service_date": "",
+            "service_time_window": "", "contact_person": "", "contact_number": "",
+        }))
+        session = base_session(current_state="ASK_VEHICLE_STATUS", destination_location="Pune")
+
+        session, outbound = sm.handle_ask_vehicle_status(session, "pune jaa rahi hai", "919999900001")
+
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+        assert "Pune" in outbound[0]["text"]
+
+    def test_current_location_defaults_from_telemetry_when_never_asked(self, monkeypatch):
+        """This flow never has a dedicated 'where is the vehicle right now'
+        question for RUNNING vehicles — current_location should default to
+        the telemetry last_location instead of staying blank on the ticket."""
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="RUNNING"))
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "", "destination_location": "Pune", "service_date": "",
+            "service_time_window": "", "contact_person": "", "contact_number": "",
+        }))
+        session = base_session(current_state="ASK_VEHICLE_STATUS", last_location="Nagpur")
+
+        session, outbound = sm.handle_ask_vehicle_status(session, "pune jaa rahi hai", "919999900001")
+
+        assert session["current_location"] == "Nagpur"
+
+    def test_city_confirmation_yes_sets_extracted_service_location(self, monkeypatch):
+        """End-to-end: once city confirmation actually runs, the field that
+        was previously left blank gets set."""
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="YES"))
+        session = base_session(
+            current_state="ASK_SERVICE_CITY_CONFIRMATION",
+            destination_location="Pune", service_city_confirmed="",
+        )
+
+        session, outbound = sm.handle_ask_service_city_confirmation(session, "haan Pune sahi hai", "919999900001")
+
+        assert session["extracted_service_location"] == "Pune"
+
+
+class TestUnclearYesNoRetryAcknowledgesInsteadOfSilentlyRepeating:
+    """Regression coverage for a real transcript bug: an ambiguous reply
+    ('hmm') to a yes/no confirmation used to make the bot silently re-send
+    the exact same block verbatim, with zero acknowledgment — reading as a
+    stuck/duplicated message. Every classify_yes_no-based confirmation
+    handler's unclear fallback must now prefix a short clarifying line."""
+
+    def test_driver_contact_confirmation_hmm_gets_clarifying_prefix(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="UNCLEAR"))
+        session = base_session(
+            current_state="ASK_DRIVER_CONTACT_CONFIRMATION",
+            driver_name="Sarvesh Swami", driver_phone="918290323758",
+        )
+
+        session, outbound = sm.handle_driver_contact_confirmation(session, "hmm", "919999900001")
+
+        body_text = outbound[0]["interactive"]["body"]["text"]
+        assert body_text.startswith("Samajh nahi paaya")
+        assert "Sarvesh Swami" in body_text
+
+    def test_confirm_summary_unclear_shows_summary_instead_of_bare_fallback(self, monkeypatch):
+        """This one used to be a total dead-end: render("FALLBACK") alone,
+        with no booking summary at all — worse than the others."""
+        monkeypatch.setattr(sm.llm, "classify_yes_no", MagicMock(return_value="UNCLEAR"))
+        session = base_session(current_state="CONFIRM_SUMMARY", extracted_service_location="Pune")
+
+        session, outbound = sm.handle_confirm_summary(session, "hmm", "919999900001")
+
+        assert outbound[0]["text"].startswith("Samajh nahi paaya")
+        assert "Pune" in outbound[0]["text"]
+        assert "samajh nahi paaya." != outbound[0]["text"]
+
+
+class TestImplausibleExtractionAsksAgainInsteadOfAcceptingGarbage:
+    """Regression coverage: extract_free_text used to have no way to say
+    'nothing plausible here' — callers fell back to `value or message`,
+    so a location/name question answered with unrelated gibberish stored
+    that gibberish as the field, silently, instead of asking again."""
+
+    def test_gibberish_current_location_reply_is_rejected_and_reasked(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value=""))
+        session = base_session(current_state="ASK_CURRENT_LOCATION")
+
+        session, outbound = sm.handle_ask_current_location(session, "asdkjaskjd banana pizza", "919999900001")
+
+        assert session.get("current_location", "") == ""
+        assert outbound[0]["text"].startswith("Samajh nahi paaya")
+        assert session["current_state"] == "ASK_CURRENT_LOCATION"
+
+    def test_gibberish_destination_reply_is_rejected_and_reasked(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value=""))
+        session = base_session(current_state="ASK_DESTINATION_LOCATION")
+
+        session, outbound = sm.handle_ask_destination_location(session, "banana pizza", "919999900001")
+
+        assert session.get("destination_location", "") == ""
+        assert outbound[0]["text"].startswith("Samajh nahi paaya")
+        assert session["current_state"] == "ASK_DESTINATION_LOCATION"
+
+    def test_gibberish_service_city_preference_is_rejected_and_reasked(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value=""))
+        session = base_session(current_state="ASK_SERVICE_CITY_PREFERENCE")
+
+        session, outbound = sm.handle_ask_service_city_preference(session, "banana pizza", "919999900001")
+
+        assert session.get("extracted_service_location", "") == ""
+        assert outbound[0]["text"].startswith("Samajh nahi paaya")
+        assert session["current_state"] == "ASK_SERVICE_CITY_PREFERENCE"
+
+    def test_gibberish_contact_person_reply_is_rejected_and_reasked(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value=""))
+        session = base_session(current_state="ASK_CONTACT_PERSON")
+
+        session, outbound = sm.handle_ask_contact_person(session, "banana pizza", "919999900001")
+
+        assert session.get("contact_person", "") == ""
+        assert outbound[0]["text"].startswith("Samajh nahi paaya")
+        assert session["current_state"] == "ASK_CONTACT_PERSON"
+
+    def test_valid_city_reply_still_works_normally(self, monkeypatch):
+        """Sanity check the fix didn't break the ordinary path."""
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Pune"))
+        session = base_session(current_state="ASK_DESTINATION_LOCATION")
+
+        session, outbound = sm.handle_ask_destination_location(session, "Pune jaa rahi hai", "919999900001")
+
+        assert session["destination_location"] == "Pune"
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+
+
 # ============================ 20. BUG-FIX REGRESSION TESTS ================
 # One test per bug found in the audit — each of these would have FAILED
 # against the pre-fix code.
