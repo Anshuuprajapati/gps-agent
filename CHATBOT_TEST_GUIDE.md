@@ -85,7 +85,7 @@ session_manager.create_session('<YOUR_PHONE>', 'MH12AA0002',
 | You send | Status | Bot should do |
 |---|---|---|
 | `Gaadi workshop mein hai` | WORKSHOP | asks expected date it'll be out |
-| `Accident ho gaya hai` | ACCIDENT | asks current location |
+| `Accident ho gaya hai` | ACCIDENT | asks expected date it'll be running again — same as WORKSHOP, never the service-booking flow |
 | `GPS nikal diya hai` | GPS_REMOVED | starts booking flow (ASK_CURRENT_LOCATION) |
 | `GPS device damage ho gaya hai` | GPS_DAMAGED | asks Yes/No to book a GPS repair |
 | `Vehicle chal rahi hai bas GPS nahi chal raha` | GPS_DAMAGED | same as above |

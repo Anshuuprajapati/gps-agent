@@ -431,13 +431,18 @@ class TestScenario05_VehicleInWorkshop:
 
 class TestScenario06_VehicleAccident:
 
-    def test_accident_reply_moves_to_current_location(self, monkeypatch):
+    def test_accident_reply_asks_expected_date_not_service_flow(self, monkeypatch):
+        """An accidental vehicle is handled through other channels
+        (insurance/garage) — same as WORKSHOP, this bot only tracks when
+        it'll be running again, never routes into the service-booking
+        flow (current/destination location, contact person, etc.)."""
         monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="ACCIDENT"))
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value=""))
         session = make_session(current_state="ASK_VEHICLE_STATUS")
 
         session, outbound = chat_turn(session, "Accident ho gaya hai gaadi ka")
-        assert_state(session, "ASK_CURRENT_LOCATION")
-        assert "location" in reply_text(outbound).lower() or "kahan" in reply_text(outbound).lower()
+        assert_state(session, "ASK_EXPECTED_DATE")
+        assert "running" in reply_text(outbound).lower() or "aa jayegi" in reply_text(outbound).lower()
 
 
 # ══════════════════════════════════════════════════════════════════════════

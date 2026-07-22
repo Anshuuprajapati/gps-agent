@@ -215,7 +215,11 @@ class TestMainPowerDisconnected:
 class TestVehicleStatusScenarios:
     @pytest.mark.parametrize("llm_value,expected_state,expected_template_key", [
         ("WORKSHOP", "ASK_EXPECTED_DATE", "ASK_EXPECTED_DATE_WORKSHOP"),
-        ("ACCIDENT", "ASK_CURRENT_LOCATION", "ASK_CURRENT_LOCATION"),
+        # An accidental vehicle is handled through other channels
+        # (insurance/garage) — same as WORKSHOP, this bot only tracks when
+        # it'll be running again, never routes into the service-booking
+        # flow (current/destination location, contact person, etc.).
+        ("ACCIDENT", "ASK_EXPECTED_DATE", "ASK_EXPECTED_DATE_ACCIDENT"),
         ("GPS_REMOVED", "ASK_DESTINATION_LOCATION", "ASK_DESTINATION_LOCATION"),
         ("GPS_DAMAGED", "ASK_GPS_REPAIR_CONFIRMATION", "ASK_GPS_REPAIR_CONFIRMATION"),
         ("RUNNING", "ASK_DESTINATION_LOCATION", "ASK_DESTINATION_LOCATION"),
@@ -1088,6 +1092,172 @@ class TestImplausibleExtractionAsksAgainInsteadOfAcceptingGarbage:
 
         assert session["destination_location"] == "Pune"
         assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+
+
+class TestDriverHandoffCapturesPhoneGivenInline:
+    """Regression coverage for a real transcript bug: 'Veh on the way h ap
+    driver se bt kr lo\n8130995093' triggers the generic driver-handoff
+    interrupt via '_is_driver_request', but the handoff only ever showed
+    the EXISTING driver on file and silently discarded the new number
+    given in the same breath — forcing the user to retype it after
+    separately rejecting the stale driver via DRIVER_CONFIRM's NO."""
+
+    def test_handoff_message_with_inline_number_transfers_directly(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_name_and_phone", MagicMock(return_value={"name": "", "phone": ""}))
+        session = base_session(
+            current_state="WAIT_DONE", root_cause="BATTERY",
+            driver_name="Sarvesh Swami", driver_phone="918290323758",
+        )
+
+        session, outbound = sm._start_driver_handoff(
+            session, "Veh on the way h ap driver se bt kr lo\n8130995093", "919999900001",
+        )
+
+        # No DRIVER_CONFIRM detour — the given number is used immediately.
+        assert session["current_state"] == "WAIT_DONE"
+        assert session["handler"] == "DRIVER"
+        assert session["driver_phone"] == "918130995093"
+        # No name was given inline — the existing name on file is kept
+        # rather than being discarded.
+        assert session["driver_name"] == "Sarvesh Swami"
+
+    def test_handoff_message_with_inline_name_and_number_uses_both(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_name_and_phone", MagicMock(return_value={"name": "Ramesh", "phone": "8130995093"}))
+        session = base_session(current_state="WAIT_DONE", root_cause="BATTERY")
+
+        session, outbound = sm._start_driver_handoff(
+            session, "naya driver Ramesh hai, 8130995093 pe baat kar lo", "919999900001",
+        )
+
+        assert session["driver_name"] == "Ramesh"
+        assert session["driver_phone"] == "918130995093"
+        assert session["handler"] == "DRIVER"
+
+    def test_handoff_message_without_a_number_still_shows_confirm_as_before(self, monkeypatch):
+        """Sanity check the fix didn't break the ordinary path — no number
+        in the message means DRIVER_CONFIRM still runs as before."""
+        session = base_session(
+            current_state="WAIT_DONE", root_cause="BATTERY",
+            driver_name="Sarvesh Swami", driver_phone="918290323758",
+        )
+
+        session, outbound = sm._start_driver_handoff(session, "driver se baat kar lo", "919999900001")
+
+        assert session["current_state"] == "DRIVER_CONFIRM"
+
+    def test_ask_new_driver_phone_only_reply_stages_it_and_asks_only_for_name(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "extract_name_and_phone", MagicMock(return_value={"name": "", "phone": "8130995093"}))
+        session = base_session(current_state="ASK_NEW_DRIVER", driver_name="Sarvesh Swami", driver_phone="918290323758")
+
+        session, outbound = sm.handle_ask_new_driver(session, "8130995093", "919999900001")
+
+        assert session["driver_phone"] == "918130995093"
+        assert session["driver_name"] == ""
+        assert "naam" in outbound[0]["text"].lower()
+        assert session["handler"] != "DRIVER"
+
+    def test_ask_new_driver_name_only_reply_pairs_with_staged_phone_not_asked_again(self, monkeypatch):
+        """The follow-up turn to the previous test: only a name is given
+        this time — the phone from the prior turn must be reused, not
+        asked for a second time."""
+        monkeypatch.setattr(sm.llm, "extract_name_and_phone", MagicMock(return_value={"name": "Ramesh", "phone": ""}))
+        session = base_session(current_state="ASK_NEW_DRIVER", driver_name="", driver_phone="918130995093")
+
+        session, outbound = sm.handle_ask_new_driver(session, "Ramesh", "919999900001")
+
+        assert session["driver_name"] == "Ramesh"
+        assert session["driver_phone"] == "918130995093"
+        assert session["handler"] == "DRIVER"
+
+    def test_ask_new_driver_name_only_does_not_reuse_a_stale_unrelated_phone(self, monkeypatch):
+        """If driver_name is still non-empty (the ordinary 'rejected an
+        existing driver, now giving a new one' path), a name-only reply
+        must NOT silently pair with whatever old phone happens to be on
+        file — that phone was never confirmed as belonging to this name."""
+        monkeypatch.setattr(sm.llm, "extract_name_and_phone", MagicMock(return_value={"name": "Ramesh", "phone": ""}))
+        session = base_session(current_state="ASK_NEW_DRIVER", driver_name="Sarvesh Swami", driver_phone="918290323758")
+
+        session, outbound = sm.handle_ask_new_driver(session, "Ramesh", "919999900001")
+
+        assert session["handler"] != "DRIVER"
+        assert "number" in outbound[0]["text"].lower() or "mobile" in outbound[0]["text"].lower()
+
+
+class TestDriverHandoffAndChangeViaGlobalIntent:
+    """Regression coverage for a real transcript bug: 'driver sa baat kar
+    lo' (a common Hinglish spelling variant of 'se') was not recognized by
+    the hardcoded _is_driver_request regex, and — unlike ticket-inquiry,
+    direct-tech-dispatch, and general-question — driver-handoff had never
+    been migrated onto classify_global_intent as a fallback. The message
+    fell all the way through to the vehicle-status classifier, which
+    misclassified it as DEFER_UNKNOWN and silently closed the case."""
+
+    def test_misspelled_handoff_phrase_still_routes_via_llm_intent(self, monkeypatch):
+        assert not sm._is_driver_request("driver sa baat kar lo")
+
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="DRIVER_HANDOFF"))
+        session = base_session(
+            current_state="ASK_VEHICLE_STATUS", root_cause="BATTERY",
+            driver_name="Sarvesh Swami", driver_phone="918290323758",
+        )
+
+        session, outbound = sm.process_message(session, "driver sa baat kar lo", "919999900001")
+
+        assert session["current_state"] == "DRIVER_CONFIRM"
+
+    def test_driver_handoff_intent_respects_the_same_guard_as_the_regex(self, monkeypatch):
+        """Once a driver has already taken over (handler=DRIVER), a stray
+        DRIVER_HANDOFF classification must not re-trigger the handoff flow
+        — same guard the regex-based check already enforced."""
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="DRIVER_HANDOFF"))
+        monkeypatch.setattr(sm.llm, "classify_wait_done_reply", MagicMock(return_value="UNCLEAR"))
+        session = base_session(current_state="WAIT_DONE", handler="DRIVER", root_cause="BATTERY")
+
+        session, outbound = sm.process_message(session, "driver sa baat kar lo", "918290323758")
+
+        assert session["current_state"] != "DRIVER_CONFIRM"
+
+    def test_driver_change_intent_routes_via_llm_when_regex_misses_it(self, monkeypatch):
+        assert not sm._is_driver_change_request("ye driver sahi nahi hai, koi aur chahiye")
+
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="DRIVER_CHANGE"))
+        session = base_session(current_state="WAIT_DONE", root_cause="BATTERY")
+
+        session, outbound = sm.process_message(session, "ye driver sahi nahi hai, koi aur chahiye", "919999900001")
+
+        assert session["current_state"] == "ASK_NEW_DRIVER"
+
+
+class TestAccidentStatusNeverEntersServiceBookingFlow:
+    """Regression coverage for a real transcript bug: an ACCIDENT status
+    used to jump straight into ASK_CURRENT_LOCATION — the start of the
+    full service-booking flow (destination, service city, contact person,
+    ticket creation) — even though an accidental vehicle is handled
+    through other channels (insurance/garage), not this bot dispatching
+    someone. It must behave exactly like WORKSHOP: ask only for an
+    expected running-again date, then close."""
+
+    def test_accident_status_asks_expected_date_not_current_location(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="ACCIDENT"))
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value=""))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.handle_ask_vehicle_status(session, "vehicle ka accident ho gya?", "919999900001")
+
+        assert session["current_state"] == "ASK_EXPECTED_DATE"
+        assert session["current_state"] != "ASK_CURRENT_LOCATION"
+
+    def test_accident_status_with_date_already_given_closes_immediately(self, monkeypatch):
+        """Same fast-path WORKSHOP already had — if a date is right there
+        in the message, skip the follow-up question entirely."""
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="ACCIDENT"))
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value="2026-07-25"))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.handle_ask_vehicle_status(session, "accident ho gaya, 25 tak aa jayegi", "919999900001")
+
+        assert session["current_state"] == "COMPLETED"
+        assert session["extracted_appointment_date"] == "2026-07-25"
 
 
 # ============================ 20. BUG-FIX REGRESSION TESTS ================

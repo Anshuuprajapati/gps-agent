@@ -400,13 +400,40 @@ def handle_start(session, message, sender_phone):
     return session, [_msg(sender_phone, text)]
 
 
-def _start_driver_handoff(session, sender_phone):
+def _transfer_driver_and_notify(session: dict):
     """
-    Shared by ASK_HANDLER (owner picks DRIVER upfront) and WAIT_DONE
-    (owner changes their mind mid-troubleshooting and wants the driver
-    involved instead). Same behavior either way: show driver details on
-    file, or ask for new ones if none saved.
+    Flips handler to DRIVER and sends the paired notification (owner ack +
+    driver intro/task) — the same two messages every path that completes a
+    driver handoff needs to send (DRIVER_CONFIRM's YES, ASK_NEW_DRIVER's
+    success case, and a handoff message that already gave a number).
     """
+    session = driver_service.transfer_to_driver(session)
+    session["current_state"] = "WAIT_DONE"
+    owner_msg = _msg(session["phone_number"], render("TRANSFER_DONE_OWNER"))
+    key = "ASK_CHECK_BATTERY" if session["root_cause"] == BATTERY_ISSUE else "ASK_CHECK_POWER"
+    driver_intro = render("TRANSFER_DONE_DRIVER", driver_name=session["driver_name"], vehicle_no=session["vehicle_no"])
+    driver_msg = _msg(session["driver_phone"], driver_intro + "\n" + render(key))
+    return session, [owner_msg, driver_msg]
+
+
+def _start_driver_handoff(session, message, sender_phone):
+    """
+    Shared by ASK_HANDLER (owner picks DRIVER upfront), WAIT_DONE (owner
+    changes their mind mid-troubleshooting), and the generic driver-handoff
+    global interrupt. If the message that triggered this already contains
+    a phone number — the owner directly telling the bot how to reach the
+    driver, e.g. "driver se baat kar lo 9876543210" — use it right away
+    instead of showing/asking for what's already been given.
+    """
+    phone_match = PHONE_RE.search(message)
+    if phone_match:
+        driver_phone = _normalize_indian_phone(phone_match.group(1))
+        conversation_context = build_conversation_context(session)
+        extracted = llm.extract_name_and_phone(session.get("current_state", "START"), message, conversation_context)
+        driver_name = extracted.get("name") or session.get("driver_name") or "Driver"
+        session = driver_service.update_driver_details(session, driver_name, driver_phone)
+        return _transfer_driver_and_notify(session)
+
     details = driver_service.get_driver_details(session)
     if details["phone"]:
         session["current_state"] = "DRIVER_CONFIRM"
@@ -436,7 +463,7 @@ def handle_ask_handler(session, message, sender_phone):
         return session, [_msg(sender_phone, render(key))]
 
     if choice == "DRIVER":
-        return _start_driver_handoff(session, sender_phone)
+        return _start_driver_handoff(session, message, sender_phone)
 
     text = render("BATTERY_ALERT", vehicle_no=session["vehicle_no"], location=session.get("last_location") or session.get("current_location") or "N/A", last_update=session.get("gpstime") or session.get("timestamp") or "N/A") if session["root_cause"] == BATTERY_ISSUE else render("MAIN_POWER_ALERT", vehicle_no=session["vehicle_no"], location=session.get("last_location") or session.get("current_location") or "N/A", last_update=session.get("gpstime") or session.get("timestamp") or "N/A")
     return session, [_button_message(sender_phone, render("FALLBACK") + "\nReply: SELF ya DRIVER", [("PAYLOAD_SELF", "Self"), ("PAYLOAD_DRIVER", "Driver")])]
@@ -455,13 +482,7 @@ def handle_driver_confirm(session, message, sender_phone):
         answer = llm.classify_yes_no(session["current_state"], message, conversation_context)
 
     if answer == "YES":
-        session = driver_service.transfer_to_driver(session)
-        session["current_state"] = "WAIT_DONE"
-        owner_msg = _msg(session["phone_number"], render("TRANSFER_DONE_OWNER"))
-        key = "ASK_CHECK_BATTERY" if session["root_cause"] == BATTERY_ISSUE else "ASK_CHECK_POWER"
-        driver_intro = render("TRANSFER_DONE_DRIVER", driver_name=session["driver_name"], vehicle_no=session["vehicle_no"])
-        driver_msg = _msg(session["driver_phone"], driver_intro + "\n" + render(key))
-        return session, [owner_msg, driver_msg]
+        return _transfer_driver_and_notify(session)
 
     if answer == "NO":
         session["current_state"] = "ASK_NEW_DRIVER"
@@ -478,16 +499,24 @@ def handle_ask_new_driver(session, message, sender_phone):
     extracted = llm.extract_name_and_phone(session["current_state"], message, conversation_context)
     phone_match = PHONE_RE.search(extracted.get("phone", "") or message)
 
-    if extracted.get("name") and phone_match:
+    if phone_match:
         driver_phone = _normalize_indian_phone(phone_match.group(1))
-        session = driver_service.update_driver_details(session, extracted["name"], driver_phone)
-        session = driver_service.transfer_to_driver(session)
-        session["current_state"] = "WAIT_DONE"
-        owner_msg = _msg(session["phone_number"], render("TRANSFER_DONE_OWNER"))
-        key = "ASK_CHECK_BATTERY" if session["root_cause"] == BATTERY_ISSUE else "ASK_CHECK_POWER"
-        driver_intro = render("TRANSFER_DONE_DRIVER", driver_name=session["driver_name"], vehicle_no=session["vehicle_no"])
-        driver_msg = _msg(session["driver_phone"], driver_intro + "\n" + render(key))
-        return session, [owner_msg, driver_msg]
+        driver_name = extracted.get("name")
+        if not driver_name:
+            # Number given without a name yet — stage it and clear any
+            # stale name on file so it never gets asked for twice; a
+            # name-only reply on the next turn pairs with THIS number.
+            session["driver_phone"] = driver_phone
+            session["driver_name"] = ""
+            return session, [_msg(sender_phone, "Driver ka naam bhejein (number mil gaya hai).")]
+        session = driver_service.update_driver_details(session, driver_name, driver_phone)
+        return _transfer_driver_and_notify(session)
+
+    if extracted.get("name") and session.get("driver_phone") and not session.get("driver_name"):
+        # Name-only reply, and a phone is already staged from earlier in
+        # this exact exchange (see above) — use it instead of asking again.
+        session = driver_service.update_driver_details(session, extracted["name"], session["driver_phone"])
+        return _transfer_driver_and_notify(session)
 
     return session, [_msg(sender_phone, "Naam aur 10-digit mobile number dono bhejein, jaise: Ramesh 9876543210")]
 
@@ -525,7 +554,7 @@ def handle_wait_done(session, message, sender_phone):
         return session, [_msg(sender_phone, render(key))]
 
     if intent == "WANT_DRIVER":
-        return _start_driver_handoff(session, sender_phone)
+        return _start_driver_handoff(session, message, sender_phone)
 
     if re.search(r"\b(kharab|toot|broken|repair|replace|damage|damaged|fault)\b", message.lower()):
         session["current_state"] = "ASK_PHYSICAL_DAMAGE"
@@ -689,8 +718,19 @@ def handle_ask_vehicle_status(session, message, sender_phone):
         return session, [_msg(sender_phone, render("ASK_EXPECTED_DATE_WORKSHOP"))]
 
     if status == "ACCIDENT":
-        session["current_state"] = "ASK_CURRENT_LOCATION"
-        return session, [_msg(sender_phone, render("ASK_CURRENT_LOCATION"))]
+        # Same as WORKSHOP — an accidental vehicle is already being
+        # handled through other channels (insurance/garage); this bot's
+        # only job is to note when it'll be running again, never to run
+        # the service-booking flow (current/destination location, service
+        # city, contact person, ticket creation don't apply here).
+        extract_date = getattr(llm, "extract_date", None)
+        date_value = extract_date(session["current_state"], message, conversation_context) if extract_date else ""
+        if date_value:
+            session["extracted_appointment_date"] = date_value
+            session["current_state"] = "COMPLETED"
+            return session, [_msg(sender_phone, render("SAVE_DATE_CLOSE", date=date_value))]
+        session["current_state"] = "ASK_EXPECTED_DATE"
+        return session, [_msg(sender_phone, render("ASK_EXPECTED_DATE_ACCIDENT"))]
 
     if status == "GPS_DAMAGED":
         # Check if vehicle is on the way and will inform later
@@ -1529,7 +1569,7 @@ def process_message(session: dict, message: str, sender_phone: str):
         and state not in ("COMPLETED", "DRIVER_CONFIRM", "ASK_NEW_DRIVER", "ASK_HANDLER")
         and _is_driver_request(message)
     ):
-        return _start_driver_handoff(session, sender_phone)
+        return _start_driver_handoff(session, message, sender_phone)
 
     # One consolidated call replaces what used to be three separate LLM
     # classifiers (is_driver_update_intent, is_general_question,
@@ -1542,6 +1582,16 @@ def process_message(session: dict, message: str, sender_phone: str):
 
     if global_intent == "DRIVER_UPDATE":
         return _handle_driver_update_message(session, message, sender_phone)
+
+    if global_intent == "DRIVER_CHANGE":
+        return _handle_driver_change_request(session, sender_phone)
+
+    if (
+        global_intent == "DRIVER_HANDOFF"
+        and session.get("handler", "OWNER") == "OWNER"
+        and state not in ("COMPLETED", "DRIVER_CONFIRM", "ASK_NEW_DRIVER", "ASK_HANDLER")
+    ):
+        return _start_driver_handoff(session, message, sender_phone)
 
     if global_intent == "TICKET_INQUIRY":
         return _handle_ticket_inquiry(session, message, sender_phone, "")
