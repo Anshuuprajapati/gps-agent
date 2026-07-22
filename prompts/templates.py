@@ -153,7 +153,7 @@ T = {
         "Status: {status}\n"
         "Vehicle: {vehicle_no}\n"
         "Service Location: {service_location}\n"
-        "Service Date: {service_date} {service_time}\n"
+        "Service Date: {service_date} {service_time}\n\n"
         # "Engineer: {engineer_name} ({engineer_phone})\n\n"
         "Aur kuch madad chahiye toh batayein."
     ),
