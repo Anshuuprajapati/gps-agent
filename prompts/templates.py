@@ -154,14 +154,14 @@ T = {
         "Vehicle: {vehicle_no}\n"
         "Service Location: {service_location}\n"
         "Service Date: {service_date} {service_time}\n"
-        "Engineer: {engineer_name} ({engineer_phone})\n\n"
+        # "Engineer: {engineer_name} ({engineer_phone})\n\n"
         "Aur kuch madad chahiye toh batayein."
     ),
     "TICKET_NOT_FOUND": "Ticket ID {ticket_id} nahi mila. Kripya sahi ticket ID check karke bhejein.",
     "TICKET_NOT_FOUND_NO_ID": "Aapka koi active ticket nahi mila. Agar aapke paas ticket ID hai toh kripya bhejein.",
     "GENERIC_ACK": "Thik hai. Aur kuch madad chahiye toh batayein.",
 
-    "FALLBACK": "samajh nahi paaya.",
+    "FALLBACK": "",
     "UNCLEAR_YES_NO_RETRY": "Samajh nahi paaya — kripya Haan ya Nahi mein jawab dein.\n\n",
     "UNCLEAR_EXTRACTION_RETRY": "Samajh nahi paaya — kripya {what} bhejein.\n\n",
 }
