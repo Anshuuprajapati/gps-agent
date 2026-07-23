@@ -1356,26 +1356,43 @@ def _handle_ticket_inquiry(session, message, sender_phone, ticket_id_in_message)
     ))]
 
 
+def _resume_pending_question(answer: str, session: dict) -> str:
+    """
+    Appends a nudge back to whatever question was pending, trimmed to just
+    its last line — some prompts (like the initial multi-paragraph GPS
+    alert) are more than just the actual question.
+    """
+    pending_lines = [line for line in session.get("last_prompt_text", "").splitlines() if line.strip()]
+    pending = pending_lines[-1] if pending_lines else ""
+    if pending:
+        return f"{answer}\n\nChaliye, wapas apne case par aate hain — {pending}"
+    return answer
+
+
 def _handle_general_question(session, message, sender_phone):
     """
     Answers an off-topic question (working hours, how GPS tracking works,
     pricing, etc.) from the knowledge base, then hands the conversation
-    back to wherever it left off — current_state is never changed here,
-    and we replay the pending question so the flow isn't lost. Only the
-    last line is replayed (not the whole stored prompt) since some prompts
-    — like the initial multi-paragraph GPS alert — are more than just the
-    actual question.
+    back to wherever it left off — current_state is never changed here.
     """
     answer = llm.answer_from_knowledge_base(message)
-    pending_lines = [line for line in session.get("last_prompt_text", "").splitlines() if line.strip()]
-    pending = pending_lines[-1] if pending_lines else ""
+    return session, [_msg(sender_phone, _resume_pending_question(answer, session))]
 
-    if pending:
-        reply = f"{answer}\n\nChaliye, wapas apne case par aate hain — {pending}"
-    else:
-        reply = answer
 
-    return session, [_msg(sender_phone, reply)]
+def _handle_off_topic_remark(session, message, sender_phone):
+    """
+    Handles a message that's neither a normal flow reply nor a real
+    question — venting, small talk, an ambiguous aside, a comment about
+    the service. The LLM generates a short, grounded acknowledgment
+    (constrained the same way answer_from_knowledge_base is: no inventing
+    facts/promises, nothing outside what's already established in this
+    conversation) instead of the generic "didn't understand" fallback the
+    state's own handler would otherwise produce. current_state is never
+    changed here — the pending question is always resumed right after.
+    """
+    conversation_context = build_conversation_context(session)
+    answer = llm.answer_off_topic_remark(message, conversation_context)
+    return session, [_msg(sender_phone, _resume_pending_question(answer, session))]
 
 
 # ------------------------------------------ bulk booking-slot extraction --
@@ -1601,6 +1618,9 @@ def process_message(session: dict, message: str, sender_phone: str):
 
     if global_intent == "GENERAL_QUESTION":
         return _handle_general_question(session, message, sender_phone)
+
+    if global_intent == "OFF_TOPIC_REMARK":
+        return _handle_off_topic_remark(session, message, sender_phone)
 
     if (
         state in _BOOKING_FLOW_STATES

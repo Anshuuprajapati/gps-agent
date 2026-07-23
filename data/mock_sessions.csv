@@ -1,2 +1,10 @@
 phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,conversation_summary,pending_quick_date,service_city_question_mode,engineer_name,engineer_phone,engine_version,pending_action_json
-918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,,,START,OWNER,,,,,,,,,,
+918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,Nagpur,UNCLEAR,COMPLETED,OWNER,2026-07-24,Kirti nagar delhi,UNKNOWN,,Sarvesh Swami,8290323758,2026-07-24,,TKT-46C2C707,ENG003,,,,02:27 PM,,,"
+Vehicle status options:
+1) Workshop me
+2) Accident hua hai
+3) Vehicle chal rahi hai","USER: Mere vehicle ka gps bnd hai service krwa do aaj
+BOT: Technician kis location par bhejna hai?
+USER: Kirti nagar delhi
+BOT: Booking Summary 📍 Current Location: Nagpur 📍 Service Location: Kirti nagar delhi 📅 Date: 2026-07-24 🕒 Time: 02:27 PM 👤 Driver: Sarvesh Swami 📞 8290323758
+BOT: ✅ Ticket create ho gaya. 🆔 Ticket ID: TKT-46C2C707 Aapki request record ho gayi hai. Hamari team aapko zarurat par contact karegi. Dhanyavaad!",,,Vikas Sharma,919000000003,,
