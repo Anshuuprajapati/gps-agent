@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest test.py::TestPostTicketCorrectionUpdatesThePersistedTicket -v)"
+    ]
+  }
+}

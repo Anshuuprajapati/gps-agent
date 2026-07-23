@@ -1061,60 +1061,141 @@ def handle_ask_contact_person(session, message, sender_phone):
     return session, [_msg(sender_phone, render("ASK_CONTACT_NUMBER"))]
 
 
+def _apply_ticket_correction_and_reply(session: dict, sender_phone: str, ticket_updates: dict):
+    """
+    Persists a correction to an ALREADY-CREATED ticket and replies with the
+    refreshed summary. create_ticket() can't be reused for this — it just
+    returns the existing row unchanged for a vehicle that already has one
+    — so this is the one place that actually writes a post-creation
+    correction into tickets.csv via ticket_service.update_ticket_fields.
+    """
+    if ticket_updates:
+        ticket_service.update_ticket_fields(session["ticket_id"], ticket_updates)
+    session["current_state"] = "COMPLETED"
+    summary = _build_booking_summary(session)
+    return session, [_msg(sender_phone, f"Thik hai, booking update kar diya:\n\n{summary}")]
+
+
+def _handle_post_ticket_correction(session: dict, message: str, sender_phone: str):
+    """
+    Handles a correction to an already-created ticket stated directly in
+    one message (e.g. "sorry kal kar do", "time badal do 5 baje") —
+    reached via classify_global_intent's BOOKING_CORRECTION, which catches
+    phrasings that don't use the literal "correction/change/update/wrong"
+    keywords ASK_BOOKING_CORRECTION's entry point looks for. Reuses the
+    same bulk extract_booking_slots() call the pre-ticket booking flow
+    uses, but OVERWRITES rather than only filling empty fields — once a
+    ticket exists, any mention of a date/time/location/contact is clearly
+    meant to change it, not fill it in for the first time.
+    """
+    conversation_context = build_conversation_context(session)
+    slots = llm.extract_booking_slots(message, conversation_context)
+
+    ticket_updates = {}
+
+    if slots.get("current_location") and slots["current_location"] != session.get("current_location"):
+        session["current_location"] = slots["current_location"]
+        ticket_updates["current_location"] = slots["current_location"]
+
+    if slots.get("destination_location") and slots["destination_location"] != session.get("extracted_service_location"):
+        session["destination_location"] = slots["destination_location"]
+        session["extracted_service_location"] = slots["destination_location"]
+        ticket_updates["service_location"] = slots["destination_location"]
+
+    if slots.get("service_date") and slots["service_date"] != session.get("service_date"):
+        session["service_date"] = slots["service_date"]
+        ticket_updates["service_date"] = slots["service_date"]
+
+    if slots.get("service_time_window") and slots["service_time_window"] != session.get("service_time_window"):
+        session["service_time_window"] = slots["service_time_window"]
+        ticket_updates["service_time"] = slots["service_time_window"]
+
+    if slots.get("contact_person") and slots["contact_person"] != session.get("contact_person"):
+        session["contact_person"] = slots["contact_person"]
+        ticket_updates["contact_person"] = slots["contact_person"]
+
+    phone_match = PHONE_RE.search(slots.get("contact_number") or "") or PHONE_RE.search(message)
+    if phone_match and phone_match.group(1) != session.get("contact_number"):
+        session["contact_number"] = phone_match.group(1)
+        ticket_updates["contact_number"] = phone_match.group(1)
+
+    if not ticket_updates:
+        return session, [_msg(sender_phone, "Koi sahi detail nahi mili. Kripya sirf woh detail bhejein jo update karni hai, jaise 'Date kal' ya 'Time 5 baje'.")]
+
+    return _apply_ticket_correction_and_reply(session, sender_phone, ticket_updates)
+
+
 def handle_ask_booking_correction(session, message, sender_phone):
     conversation_context = build_conversation_context(session)
     updated = False
+    ticket_updates = {}
     raw = message.strip().lower()
 
     if PHONE_RE.search(message):
         session["contact_number"] = PHONE_RE.search(message).group(1)
+        ticket_updates["contact_number"] = session["contact_number"]
         updated = True
 
     if "service location" in raw or ("service" in raw and "location" in raw):
         value = llm.extract_free_text(session["current_state"], message, "service location", conversation_context)
         if value:
             session["extracted_service_location"] = value
+            ticket_updates["service_location"] = value
             updated = True
 
     if "destination" in raw or "kahan" in raw or "ja rahe" in raw:
         value = llm.extract_free_text(session["current_state"], message, "destination location", conversation_context)
         if value:
             session["destination_location"] = value
+            session["extracted_service_location"] = value
+            ticket_updates["service_location"] = value
             updated = True
 
     if "vehicle location" in raw or "current location" in raw or ("location" in raw and "service" not in raw):
         value = llm.extract_free_text(session["current_state"], message, "current location", conversation_context)
         if value:
             session["current_location"] = value
+            ticket_updates["current_location"] = value
             updated = True
 
     if "time" in raw or "baje" in raw or "+" in raw or "pm" in raw or "am" in raw:
         value = llm.extract_time(session["current_state"], message, conversation_context)
         if value:
             session["service_time_window"] = value
+            ticket_updates["service_time"] = value
             updated = True
 
     if "date" in raw or "kal" in raw or "parso" in raw or "aaj" in raw or "july" in raw or "aug" in raw or "september" in raw or "oct" in raw:
         value = llm.extract_date(session["current_state"], message, conversation_context)
         if value:
             session["service_date"] = value
+            ticket_updates["service_date"] = value
             updated = True
 
     if ("city" in raw or "service city" in raw or "preferred city" in raw) and not updated:
         value = llm.extract_free_text(session["current_state"], message, "preferred service city", conversation_context)
         if value:
             session["extracted_service_location"] = value
+            ticket_updates["service_location"] = value
             updated = True
 
     if ("contact person" in raw or "site" in raw or "phone" in raw or "number" in raw) and not updated:
         value = llm.extract_free_text(session["current_state"], message, "contact person name", conversation_context)
         if value:
             session["contact_person"] = value
+            ticket_updates["contact_person"] = value
             updated = True
 
     if not updated:
         session["current_state"] = "ASK_BOOKING_CORRECTION"
         return session, [_msg(sender_phone, "Koi sahi detail nahi mili. Kripya sirf woh detail bhejein jo aap update karna chahte hain, jaise 'Service city Delhi' ya 'Time 5 baje'.")]
+
+    if session.get("ticket_id"):
+        # A ticket already exists — this is a correction to it, not a
+        # first-time booking. create_ticket() would just return the
+        # existing row unchanged for this vehicle, so update the
+        # persisted ticket directly instead of trying to "create" again.
+        return _apply_ticket_correction_and_reply(session, sender_phone, ticket_updates)
 
     return _create_and_confirm_ticket_directly(session, sender_phone)
 
@@ -1258,6 +1339,17 @@ def handle_completed(session, message, sender_phone):
     # message (reusing the same classification/branching as the initial
     # question) instead of discarding it and re-asking from scratch.
     if not session.get("ticket_id"):
+        # The only way to reach COMPLETED with no ticket is a placeholder
+        # close (DEFER_UNKNOWN / GPS_DAMAGED "on the way" both default
+        # service_date to tomorrow via _defer_and_close, purely so there's
+        # SOMETHING to show — never a real, user-confirmed booking date).
+        # Left in place, that placeholder silently blocks a genuinely new
+        # request from ever setting its own date, since every slot-fill
+        # guard only writes service_date when it's currently empty — e.g.
+        # "aaj" in a later direct-tech-dispatch message would never get
+        # applied because this leftover placeholder was already sitting
+        # there. Clear it before re-entering the flow fresh.
+        session["service_date"] = ""
         session["current_state"] = "ASK_VEHICLE_STATUS"
         return handle_ask_vehicle_status(session, message, sender_phone)
     
@@ -1595,6 +1687,9 @@ def process_message(session: dict, message: str, sender_phone: str):
 
     if global_intent == "TICKET_INQUIRY":
         return _handle_ticket_inquiry(session, message, sender_phone, "")
+
+    if global_intent == "BOOKING_CORRECTION" and session.get("ticket_id"):
+        return _handle_post_ticket_correction(session, message, sender_phone)
 
     if global_intent == "DIRECT_TECH_DISPATCH":
         return _handle_direct_tech_request(session, message, sender_phone)

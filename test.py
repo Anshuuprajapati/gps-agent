@@ -1260,6 +1260,163 @@ class TestAccidentStatusNeverEntersServiceBookingFlow:
         assert session["extracted_appointment_date"] == "2026-07-25"
 
 
+class TestStaleDeferredDateDoesNotLeakIntoANewRequest:
+    """Regression coverage for a real transcript bug: saying 'Mujhe nhi pta
+    hai' (DEFER_UNKNOWN) sets a PLACEHOLDER service_date (tomorrow, via
+    _defer_and_close's "we'll follow up later" default) and closes the
+    case with no ticket. When the customer then comes back with a
+    genuinely new request that mentions a real date ('service krwa do
+    aaj'), that leftover placeholder silently blocked the fresh date from
+    ever being applied — every slot-fill guard only writes service_date
+    when it's currently empty — so the ticket got tomorrow's date instead
+    of today's, no matter what was actually said."""
+
+    def test_reopening_without_a_ticket_clears_the_placeholder_date(self, monkeypatch):
+        session = base_session(
+            current_state="COMPLETED",
+            service_date="2026-07-24",  # leftover DEFER_UNKNOWN placeholder
+            ticket_id="",
+        )
+        monkeypatch.setattr(sm.gps_service, "verify_gps", MagicMock(return_value=False))
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="UNCLEAR"))
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value=""))
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={}))
+
+        session, outbound = sm.handle_completed(session, "Abhi pta chl gya hai location mujhe", "919999900001")
+
+        assert session["current_state"] == "ASK_VEHICLE_STATUS"
+        assert session.get("service_date", "") == ""
+
+    def test_fresh_direct_tech_dispatch_after_reopen_uses_the_new_date_not_the_stale_one(self, monkeypatch):
+        """End-to-end: the full sequence from the real transcript — defer,
+        reopen, then a direct-tech-dispatch request mentioning 'aaj' —
+        must end with TODAY's date, not the leftover placeholder."""
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="DEFER_UNKNOWN"))
+        monkeypatch.setattr(sm.llm, "extract_date", MagicMock(return_value=""))
+        session = base_session(current_state="ASK_VEHICLE_STATUS")
+
+        session, outbound = sm.process_message(session, "Mujhe nhi pta hai", "919999900001")
+        assert session["current_state"] == "COMPLETED"
+        assert session["service_date"] == sm.add_days_to_today(1)  # the placeholder
+
+        monkeypatch.setattr(sm.gps_service, "verify_gps", MagicMock(return_value=False))
+        monkeypatch.setattr(sm.llm, "classify_vehicle_status", MagicMock(return_value="UNCLEAR"))
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value=""))
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={}))
+        session, outbound = sm.process_message(session, "Abhi pta chl gya hai location mujhe", "919999900001")
+        assert session.get("service_date", "") == ""
+
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="DIRECT_TECH_DISPATCH"))
+        monkeypatch.setattr(
+            sm.llm, "extract_tech_dispatch_slots",
+            MagicMock(return_value={
+                "service_location": "", "service_date": sm.add_days_to_today(0),
+                "service_time_window": "", "contact_person": "", "contact_number": "",
+            }),
+        )
+        session, outbound = sm.process_message(session, "Mere vehicle ka gps bnd hai service krwa do aaj", "919999900001")
+        assert session["current_state"] == "ASK_DIRECT_TECH_LOCATION"
+        assert session["service_date"] == sm.add_days_to_today(0)
+
+        monkeypatch.setattr(
+            sm.ticket_service, "create_ticket",
+            MagicMock(return_value={
+                "ticket_id": "TKT-TODAY1", "engineer_id": "ENG-1",
+                "engineer_name": "Engineer One", "engineer_phone": "919900000000",
+                "existing_ticket": False,
+            }),
+        )
+        session, outbound = sm.process_message(session, "Kirti nagar delhi", "919999900001")
+
+        assert session["service_date"] == sm.add_days_to_today(0)
+
+
+class TestPostTicketCorrectionUpdatesThePersistedTicket:
+    """New capability: a correction stated directly after a ticket already
+    exists (e.g. 'Sorry kl ka kr do service book') used to either do
+    nothing (create_ticket() just returns the existing row unchanged) or,
+    via ASK_BOOKING_CORRECTION's old ending, silently discard the change
+    to the actual tickets.csv row and reply with "Previous ticket found"
+    boilerplate instead of the updated summary. Now it persists the
+    correction to the real ticket record and replies with the refreshed
+    Booking Summary."""
+
+    def test_direct_correction_message_updates_ticket_csv_and_replies_with_summary(self, tmp_csv_backend, monkeypatch):
+        tickets_csv, _ = tmp_csv_backend
+        with open(tickets_csv, "w", newline="") as f:
+            csv.writer(f).writerow(ticket_service.TICKET_COLUMNS)
+            csv.writer(f).writerow([
+                "TKT-EXISTING1", "MH12AB1234", "GPS_DAMAGED", "Nagpur", "Kirti nagar delhi",
+                "2026-07-23", "02:27 PM", "Sarvesh Swami", "8290323758",
+                "ENG001", "Ramesh Kumar", "919000000001", "ASSIGNED", "", "",
+            ])
+
+        session = base_session(
+            current_state="COMPLETED", ticket_id="TKT-EXISTING1",
+            current_location="Nagpur", extracted_service_location="Kirti nagar delhi",
+            service_date="2026-07-23", service_time_window="02:27 PM",
+            contact_person="Sarvesh Swami", contact_number="8290323758",
+        )
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="BOOKING_CORRECTION"))
+        monkeypatch.setattr(sm.llm, "extract_booking_slots", MagicMock(return_value={
+            "current_location": "", "destination_location": "", "service_date": "2026-07-24",
+            "service_time_window": "", "contact_person": "", "contact_number": "",
+        }))
+
+        session, outbound = sm.process_message(session, "Sorry kl ka kr do service book", "919999900001")
+
+        assert session["service_date"] == "2026-07-24"
+        assert "2026-07-24" in outbound[0]["text"]
+
+        with open(tickets_csv) as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 1
+        assert rows[0]["service_date"] == "2026-07-24"
+        assert rows[0]["ticket_id"] == "TKT-EXISTING1"
+
+    def test_booking_correction_intent_without_a_ticket_falls_through_normally(self, monkeypatch):
+        """Guard check: BOOKING_CORRECTION only fires when a real ticket
+        exists — otherwise it must not hijack a message that's still
+        legitimately answering a pre-ticket booking question."""
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="BOOKING_CORRECTION"))
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Pune"))
+        session = base_session(current_state="ASK_DESTINATION_LOCATION", ticket_id="")
+
+        session, outbound = sm.process_message(session, "Pune jaa rahe hain", "919999900001")
+
+        assert session["current_state"] == "ASK_SERVICE_CITY_CONFIRMATION"
+
+    def test_explicit_correction_keyword_after_ticket_updates_ticket_not_creates_new(self, tmp_csv_backend, monkeypatch):
+        """ASK_BOOKING_CORRECTION's own entry point (the 'correction/change/
+        update/wrong' keyword path) must also update the existing ticket
+        once one exists, instead of silently no-op'ing via create_ticket()."""
+        tickets_csv, _ = tmp_csv_backend
+        with open(tickets_csv, "w", newline="") as f:
+            csv.writer(f).writerow(ticket_service.TICKET_COLUMNS)
+            csv.writer(f).writerow([
+                "TKT-EXISTING2", "MH12AB1234", "GPS_DAMAGED", "Nagpur", "Pune",
+                "2026-07-23", "05:00 PM", "Raju", "9876500000",
+                "ENG001", "Ramesh Kumar", "919000000001", "ASSIGNED", "", "",
+            ])
+
+        session = base_session(
+            current_state="ASK_BOOKING_CORRECTION", ticket_id="TKT-EXISTING2",
+            extracted_service_location="Pune", service_time_window="05:00 PM",
+        )
+        monkeypatch.setattr(sm.llm, "extract_free_text", MagicMock(return_value="Delhi"))
+
+        session, outbound = sm.handle_ask_booking_correction(session, "Service location Delhi", "919999900001")
+
+        assert session["extracted_service_location"] == "Delhi"
+        assert session["current_state"] == "COMPLETED"
+        assert "Previous ticket found" not in outbound[0]["text"]
+
+        with open(tickets_csv) as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 1  # updated in place, not a second row
+        assert rows[0]["service_location"] == "Delhi"
+
+
 # ============================ 20. BUG-FIX REGRESSION TESTS ================
 # One test per bug found in the audit — each of these would have FAILED
 # against the pre-fix code.

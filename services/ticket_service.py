@@ -155,3 +155,37 @@ def update_ticket_status(ticket_id: str, new_status: str, note: str = "") -> dic
 
 def close_ticket(ticket_id: str, note: str = "") -> dict:
     return update_ticket_status(ticket_id, "CLOSED", note)
+
+
+_CORRECTABLE_FIELDS = {
+    "current_location", "service_location", "service_date",
+    "service_time", "contact_person", "contact_number",
+}
+
+
+def update_ticket_fields(ticket_id: str, updates: dict) -> dict:
+    """
+    Applies a post-creation correction (date/time/location/contact changed
+    after the ticket already exists) directly to the persisted row —
+    previously nothing did this: create_ticket() just returns the existing
+    row unchanged for a vehicle that already has one, so a correction only
+    ever updated the in-memory session, never the actual ticket record a
+    dispatched engineer would see. Deliberately narrower than
+    update_ticket_status: only the data fields in _CORRECTABLE_FIELDS can
+    be touched here — status has its own validated transition function.
+    """
+    ticket_id_norm = str(ticket_id or "").strip().upper()
+    updates = {k: v for k, v in (updates or {}).items() if k in _CORRECTABLE_FIELDS and v}
+
+    with FileLock(settings.TICKETS_CSV + ".lock"):
+        df = _load_tickets_df()
+        match_idx = df.index[df["ticket_id"].str.strip().str.upper() == ticket_id_norm]
+        if len(match_idx) == 0:
+            raise ValueError(f"No ticket found with id {ticket_id!r}")
+
+        idx = match_idx[-1]
+        for field, value in updates.items():
+            df.at[idx, field] = value
+        df.to_csv(settings.TICKETS_CSV, index=False)
+
+        return df.loc[idx].to_dict()
