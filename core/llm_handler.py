@@ -585,6 +585,17 @@ def classify_global_intent(current_state: str, user_message: str, conversation_c
         "already exists (CURRENT_STATE is COMPLETED or similar) — if "
         "there's no ticket yet, this is more likely just a normal answer "
         "to whatever's being asked (FLOW_REPLY) instead.\n"
+        "OFF_TOPIC_REMARK — a comment, complaint, venting, or small talk "
+        "that is NOT a real question and could NOT plausibly be trying to "
+        "answer whatever CURRENT_STATE is asking (e.g. 'yaar bahut "
+        "pareshaan kar diya iss GPS ne', 'ye kya bakwas hai', 'good "
+        "morning', random chit-chat unrelated to the vehicle/service). Be "
+        "conservative: if the message could reasonably be an answer, "
+        "however imperfect or a bare 'ok'/'thik hai'/'hmm'-style "
+        "acknowledgment, prefer FLOW_REPLY instead so the state's own "
+        "handler gets a chance to understand it — this category is only "
+        "for messages that clearly aren't trying to move the current "
+        "step forward at all.\n"
         "FLOW_REPLY — none of the above; a normal reply to whatever "
         "CURRENT_STATE was asking for.\n"
         "When in doubt, prefer FLOW_REPLY so the ongoing flow isn't "
@@ -698,3 +709,44 @@ def answer_from_knowledge_base(user_message: str) -> str:
     except Exception as e:
         print(f"[llm_handler] {settings.LLM_PROVIDER} knowledge-base call failed: {e}")
         return _NO_ANSWER_FALLBACK
+
+
+_OFF_TOPIC_ACK_FALLBACK = "Thik hai, samajh gaya."
+
+
+def answer_off_topic_remark(user_message: str, conversation_context: str = "") -> str:
+    """
+    The other deliberate exception to "the LLM never writes the outgoing
+    message" (alongside answer_from_knowledge_base) — for a message that's
+    neither a normal flow answer nor a real question: venting, small talk,
+    an ambiguous aside, a comment about the service. Generates a short
+    acknowledgment instead of the generic "didn't understand" fallback the
+    state's own handler would otherwise produce.
+
+    Grounded the same way the knowledge-base answer is: no inventing
+    facts/promises/dates not already established in the conversation, and
+    no attempt to ask a new question or move the flow forward — the
+    caller (state_machine._handle_off_topic_remark) always resumes
+    whatever question was pending right after this.
+    """
+    prompt = (
+        (f"CONVERSATION_SO_FAR:\n{conversation_context}\n\n" if conversation_context else "")
+        + f'USER_MESSAGE: "{user_message}"\n\n'
+        "The user said something that is not a direct answer to whatever "
+        "was being asked, and is not a real question either — it's a "
+        "comment, complaint, venting, or small talk. Write ONE short, "
+        "natural acknowledgment in Hindi/Hinglish that responds to what "
+        "they said. Do NOT invent facts, promises, dates, or policies not "
+        "already established in CONVERSATION_SO_FAR. Do NOT ask a new "
+        "question or try to move the conversation forward — that is "
+        'handled separately. Return {"value": "<short acknowledgment>"} '
+        "as JSON."
+    )
+    try:
+        raw_text = _call_llm(prompt)
+        parsed = json.loads(_strip_json_fence(raw_text))
+        answer = (parsed.get("value") or "").strip()
+        return answer or _OFF_TOPIC_ACK_FALLBACK
+    except Exception as e:
+        print(f"[llm_handler] {settings.LLM_PROVIDER} off-topic-remark call failed: {e}")
+        return _OFF_TOPIC_ACK_FALLBACK

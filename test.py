@@ -45,6 +45,7 @@ from config import settings                    # noqa: E402
 
 _REAL_ANSWER_FROM_KB = llm_handler.answer_from_knowledge_base
 _REAL_CLASSIFY_GLOBAL_INTENT = llm_handler.classify_global_intent
+_REAL_ANSWER_OFF_TOPIC_REMARK = llm_handler.answer_off_topic_remark
 
 
 # ============================================================== fixtures ==
@@ -84,7 +85,7 @@ def no_real_llm(monkeypatch):
         "classify_yes_no", "classify_wait_done_reply", "classify_self_or_driver",
         "classify_vehicle_status", "extract_date", "extract_time",
         "extract_free_text", "extract_name_and_phone", "answer_from_knowledge_base",
-        "extract_booking_slots", "extract_tech_dispatch_slots",
+        "extract_booking_slots", "extract_tech_dispatch_slots", "answer_off_topic_remark",
     ):
         monkeypatch.setattr(sm.llm, name, _boom, raising=True)
 
@@ -1415,6 +1416,52 @@ class TestPostTicketCorrectionUpdatesThePersistedTicket:
             rows = list(csv.DictReader(f))
         assert len(rows) == 1  # updated in place, not a second row
         assert rows[0]["service_location"] == "Delhi"
+
+
+class TestOffTopicRemarkGeneratesGroundedReply:
+    """New capability: a message that's neither a flow reply nor a real
+    question (venting, small talk, an ambiguous aside) gets a short LLM-
+    generated acknowledgment instead of the generic 'didn't understand'
+    fallback — grounded the same way answer_from_knowledge_base is, and
+    always resuming whatever was pending."""
+
+    def test_off_topic_remark_routes_to_grounded_reply_and_resumes_pending_question(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "classify_global_intent", MagicMock(return_value="OFF_TOPIC_REMARK"))
+        monkeypatch.setattr(
+            sm.llm, "answer_off_topic_remark",
+            MagicMock(return_value="Samajh sakta hoon, GPS issues frustrating ho sakte hain."),
+        )
+        session = base_session(
+            current_state="ASK_VEHICLE_STATUS",
+            last_prompt_text="Namaste!\n\nVehicle ki current status batayein.",
+        )
+
+        session, outbound = sm.process_message(session, "yaar bahut pareshaan kar diya iss GPS ne", "919999900001")
+
+        assert "Samajh sakta hoon" in outbound[0]["text"]
+        assert "Vehicle ki current status batayein." in outbound[0]["text"]
+        assert session["current_state"] == "ASK_VEHICLE_STATUS"
+
+    def test_off_topic_remark_llm_failure_falls_back_gracefully(self, monkeypatch):
+        """Unit-level check of the real function (not the autouse mock) —
+        stubs the raw LLM call so this doesn't need network access."""
+        monkeypatch.setattr(sm.llm, "answer_off_topic_remark", _REAL_ANSWER_OFF_TOPIC_REMARK, raising=True)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("network down")
+        monkeypatch.setattr(llm_handler, "_call_llm", _boom)
+
+        result = sm.llm.answer_off_topic_remark("ye kya bakwas hai")
+
+        assert result == llm_handler._OFF_TOPIC_ACK_FALLBACK
+
+    def test_off_topic_remark_parses_real_function_response(self, monkeypatch):
+        monkeypatch.setattr(sm.llm, "answer_off_topic_remark", _REAL_ANSWER_OFF_TOPIC_REMARK, raising=True)
+        monkeypatch.setattr(llm_handler, "_call_llm", lambda *_a, **_k: '{"value": "Thik hai, samajh gaya."}')
+
+        result = sm.llm.answer_off_topic_remark("random chit chat", "some context")
+
+        assert result == "Thik hai, samajh gaya."
 
 
 # ============================ 20. BUG-FIX REGRESSION TESTS ================

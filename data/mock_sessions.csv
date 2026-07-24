@@ -1,14 +1,2 @@
 phone_number,vehicle_no,last_location,timestamp,gpstime,main_powervoltage,ismainpoerconnected,gpsStatus,driver_name,driver_phone,current_location,vehicle_state,current_state,handler,extracted_appointment_date,extracted_service_location,root_cause,physical_damage,contact_person,contact_number,service_date,service_time,ticket_id,engineer_id,destination_location,service_city_confirmed,service_date_step,service_time_window,driver_contact_confirmed,awaiting_alternate_contact,last_prompt_text,conversation_summary,pending_quick_date,service_city_question_mode,engineer_name,engineer_phone,engine_version,pending_action_json
-918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,Nagpur,,COMPLETED,OWNER,,Kirti nagar delhi,UNKNOWN,,Sarvesh Swami,8290323758,2026-07-24,,TKT-9F36DB26,ENG003,,,,03:21 PM,,,"Namaste!
-
-Vehicle MH16EF9012 se GPS data receive nahi ho raha hai.
-
-📍 Last Location: Nagpur
-
-🕒 Last Update: 21 June 2026 09:30
-
-Vehicle ki current status batayein.","USER: Mere vehicle ka gps bnd hai service krwa do aaj Kirti nagar delhi
-BOT: Booking Summary 📍 Current Location: Nagpur 📍 Service Location: Kirti nagar delhi 📅 Date: 2026-07-23 🕒 Time: 03:21 PM 👤 Driver: Sarvesh Swami 📞 8290323758
-BOT: ✅ Ticket create ho gaya. 🆔 Ticket ID: TKT-9F36DB26 Aapki request record ho gayi hai. Hamari team aapko zarurat par contact karegi. Dhanyavaad!
-USER: Sorry kl ka kr do service book
-BOT: Thik hai, booking update kar diya: Booking Summary 📍 Current Location: Nagpur 📍 Service Location: Kirti nagar delhi 📅 Date: 2026-07-24 🕒 Time: 03:21 PM 👤 Driver: Sarvesh Swami 📞 8…",,,Vikas Sharma,919000000003,,
+918882374849,MH16EF9012,Nagpur,2026-06-21 09:30:00,21 June 2026 09:30,12.6,1,0,Sarvesh Swami,8290323758,,,START,OWNER,,,,,,,,,,

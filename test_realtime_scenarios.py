@@ -173,7 +173,7 @@ def default_llm_guards(monkeypatch):
         "classify_yes_no", "classify_wait_done_reply", "classify_self_or_driver",
         "classify_vehicle_status", "extract_date", "extract_time",
         "extract_free_text", "extract_name_and_phone", "extract_booking_slots",
-        "extract_tech_dispatch_slots", "answer_from_knowledge_base",
+        "extract_tech_dispatch_slots", "answer_from_knowledge_base", "answer_off_topic_remark",
     ):
         monkeypatch.setattr(sm.llm, fn, _boom, raising=False)
 
